@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.27",
     "praw>=7.7",
     "fredapi>=0.5.1",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,9 @@ tradingai-news-mcp = "tradingai.news.server:main"
 tradingai-regime-mcp = "tradingai.regime.server:main"
 tradingai-predict-mcp = "tradingai.predict.server:main"
 tradingai-predict-eval = "tradingai.predict.evaluation.runner:main"
+tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
+tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"
+tradingai-sync-news = "tradingai.data.jobs.sync_news_events:main"
 
 [build-system]
 requires = ["hatchling"]

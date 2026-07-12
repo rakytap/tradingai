@@ -22,6 +22,14 @@ class HorizonPrediction(BaseModel):
     expected_return_pct: float
 
 
+class PredictionMetadata(BaseModel):
+    sector: str | None = None
+    regime: str | None = None
+    catalyst_tags: list[str] = Field(default_factory=list)
+    reason_tags: list[str] = Field(default_factory=list)
+    prediction_type: str = "general_directional"
+
+
 class PredictionReport(BaseModel):
     ticker: str
     agent_signals: list[AgentSignal]
@@ -30,9 +38,10 @@ class PredictionReport(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasons: list[str] = Field(default_factory=list)
     as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: PredictionMetadata | None = None
 
     def to_public_dict(self) -> dict:
-        return {
+        payload = {
             "ticker": self.ticker,
             "agent_signals": [signal.model_dump() for signal in self.agent_signals],
             "fusion": self.fusion,
@@ -41,3 +50,7 @@ class PredictionReport(BaseModel):
             "reasons": self.reasons,
             "as_of": self.as_of.isoformat(),
         }
+        if self.metadata is not None:
+            payload["metadata"] = self.metadata.model_dump()
+        return payload
+

@@ -8,8 +8,7 @@ from tradingai.predict.adapters.technical import adapt_technical_signal
 from tradingai.predict.tools.predict import generate_prediction_tool
 
 
-def test_generate_prediction_end_to_end_mocked(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRADINGAI_PREDICT_DATABASE_PATH", str(tmp_path / "predictions.sqlite3"))
+def test_generate_prediction_end_to_end_mocked():
 
     technical_payload = {
         "symbol": "AAPL",
@@ -43,23 +42,26 @@ def test_generate_prediction_end_to_end_mocked(tmp_path, monkeypatch):
             "tradingai.predict.tools.predict.fetch_regime_signal",
             return_value=adapt_regime_signal(regime_payload),
         ),
+        patch(
+            "tradingai.predict.tools.predict.save_prediction",
+            return_value=[1, 2, 3],
+        ),
     ):
         payload = generate_prediction_tool("AAPL")
 
     assert payload["ticker"] == "AAPL"
-    assert payload["prediction_id"] > 0
+    assert payload["prediction_ids"] == [1, 2, 3]
     assert payload["fusion"]["combined_score"] > 0
     assert len(payload["horizons"]) == 3
     assert "Positive earnings revisions" in payload["reasons"]
 
 
 @pytest.mark.integration
-def test_generate_prediction_live_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRADINGAI_PREDICT_DATABASE_PATH", str(tmp_path / "predictions.sqlite3"))
+def test_generate_prediction_live_round_trip():
     try:
         payload = generate_prediction_tool("AAPL")
     except Exception as exc:
         pytest.skip(f"Live prediction unavailable: {exc}")
     assert payload["ticker"] == "AAPL"
-    assert payload["prediction_id"] > 0
+    assert len(payload["prediction_ids"]) == 3
 

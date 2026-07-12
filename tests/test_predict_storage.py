@@ -1,11 +1,9 @@
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from tradingai.predict.fusion.scorer import fuse_agent_signals
 from tradingai.predict.models import AgentSignal
-from tradingai.predict.storage.repository import (
-    get_prediction_history,
-    save_prediction,
-)
+from tradingai.predict.storage.repository import save_prediction
 
 
 def _report():
@@ -28,7 +26,7 @@ def _report():
             bearish_score=0.4,
             confidence=0.7,
             reasons=["Positive catalyst"],
-            raw={"sentiment": 0.6},
+            raw={"sentiment": 0.6, "catalysts": ["beat estimates"], "risk_factors": []},
         ),
         AgentSignal(
             agent="regime",
@@ -46,13 +44,21 @@ def _report():
     return report
 
 
-def test_save_and_query_prediction(tmp_path):
-    db_path = str(tmp_path / "predictions.sqlite3")
+def test_save_prediction_uses_postgres_repository():
     report = _report()
-    prediction_id = save_prediction(report, db_path=db_path)
-    assert prediction_id > 0
-
-    history = get_prediction_history("AAPL", limit=5, db_path=db_path)
-    assert len(history) == 1
-    assert history[0]["ticker"] == "AAPL"
-    assert history[0]["combined_score"] == report.fusion["combined_score"]
+    with (
+        patch("tradingai.predict.storage.repository.ensure_stock", return_value={"sector": "Technology"}),
+        patch("tradingai.predict.storage.repository.predictions_repo.save_prediction_rows", return_value=[1, 2, 3]) as mock_save,
+    ):
+        ids = save_prediction(report)
+    assert ids == [1, 2, 3]
+    mock_save.assert_called_once()
+    rows = mock_save.call_args.args[0]
+    assert len(rows) == 3
+    assert rows[0]["sector"] == "Technology"
+    assert rows[0]["prediction_type"] in {
+        "earnings_driven_rally",
+        "general_directional",
+        "product_catalyst_rally",
+        "analyst_upgrade_rally",
+    }

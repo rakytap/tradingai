@@ -9,7 +9,6 @@ load_dotenv()
 
 DEFAULT_WEIGHTS = (0.45, 0.35, 0.20)
 DEFAULT_HORIZONS = (1, 5, 20)
-DEFAULT_DATABASE_PATH = "./data/predictions.sqlite3"
 
 HORIZON_SCALES = {
     1: 1.0,
@@ -41,8 +40,3 @@ def get_prediction_horizons() -> tuple[int, ...]:
     raw = os.getenv("TRADINGAI_PREDICT_HORIZONS", ",".join(str(h) for h in DEFAULT_HORIZONS))
     horizons = tuple(int(value.strip()) for value in raw.split(",") if value.strip())
     return horizons or DEFAULT_HORIZONS
-
-
-@lru_cache
-def get_database_path() -> str:
-    return os.getenv("TRADINGAI_PREDICT_DATABASE_PATH", DEFAULT_DATABASE_PATH)

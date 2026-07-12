@@ -21,7 +21,7 @@ def get_agent_signals(ticker: str) -> dict:
 
 @mcp.tool()
 def generate_prediction(ticker: str) -> dict:
-    """Generate a multi-horizon prediction and persist it to SQLite.
+    """Generate a multi-horizon prediction and persist it to PostgreSQL.
 
     Probabilities are computed by a deterministic weighted-sigmoid fusion function,
     not by an LLM.
@@ -51,6 +51,30 @@ def get_evaluation_metrics(horizon_days: int | None = None) -> dict:
 def get_prediction_history(ticker: str | None = None, limit: int = 20) -> dict:
     """Query stored predictions for a ticker or across all tickers."""
     return predict.get_prediction_history_tool(ticker=ticker, limit=limit)
+
+
+@mcp.tool()
+def get_prediction_track_record(
+    sector: str | None = None,
+    prediction_type: str | None = None,
+    catalyst_tag: str | None = None,
+    regime: str | None = None,
+    horizon_days: int | None = None,
+) -> dict:
+    """Return segment hit rate, average return, and overconfidence from stored history."""
+    return predict.get_prediction_track_record_tool(
+        sector=sector,
+        prediction_type=prediction_type,
+        catalyst_tag=catalyst_tag,
+        regime=regime,
+        horizon_days=horizon_days,
+    )
+
+
+@mcp.tool()
+def get_segment_calibration(horizon_days: int | None = None) -> dict:
+    """Return calibration metrics grouped by sector and prediction type."""
+    return predict.get_segment_calibration_tool(horizon_days)
 
 
 def main() -> None:

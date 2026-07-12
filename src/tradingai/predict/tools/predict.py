@@ -6,7 +6,12 @@ from tradingai.predict.adapters.technical import fetch_technical_signal
 from tradingai.predict.evaluation.metrics import compute_evaluation_metrics
 from tradingai.predict.evaluation.outcomes import evaluate_pending_outcomes
 from tradingai.predict.fusion.scorer import explain_prediction_report, fuse_agent_signals
-from tradingai.predict.storage.repository import get_prediction_history, save_prediction
+from tradingai.predict.storage.repository import (
+    get_prediction_history,
+    get_segment_calibration,
+    get_track_record,
+    save_prediction,
+)
 
 
 def get_agent_signals_tool(ticker: str) -> dict:
@@ -28,9 +33,9 @@ def generate_prediction_tool(ticker: str) -> dict:
         fetch_regime_signal(),
     ]
     report = fuse_agent_signals(ticker, signals)
-    prediction_id = save_prediction(report)
+    prediction_ids = save_prediction(report)
     payload = report.to_public_dict()
-    payload["prediction_id"] = prediction_id
+    payload["prediction_ids"] = prediction_ids
     return payload
 
 
@@ -75,4 +80,36 @@ def get_prediction_history_tool(
         "ticker": ticker.upper() if ticker else None,
         "count": len(history),
         "items": history,
+    }
+
+
+def get_prediction_track_record_tool(
+    sector: str | None = None,
+    prediction_type: str | None = None,
+    catalyst_tag: str | None = None,
+    regime: str | None = None,
+    horizon_days: int | None = None,
+) -> dict:
+    return {
+        "filters": {
+            "sector": sector,
+            "prediction_type": prediction_type,
+            "catalyst_tag": catalyst_tag,
+            "regime": regime,
+            "horizon_days": horizon_days,
+        },
+        "track_record": get_track_record(
+            sector=sector,
+            prediction_type=prediction_type,
+            catalyst_tag=catalyst_tag,
+            regime=regime,
+            horizon_days=horizon_days,
+        ),
+    }
+
+
+def get_segment_calibration_tool(horizon_days: int | None = None) -> dict:
+    return {
+        "horizon_days": horizon_days,
+        "segments": get_segment_calibration(horizon_days),
     }

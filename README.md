@@ -96,6 +96,8 @@ This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing depe
 | `evaluate_predictions` | Backfill actual returns for mature predictions |
 | `get_evaluation_metrics` | Accuracy, precision/recall, MAE, Brier score, top-10 ranked return |
 | `get_prediction_history` | Query stored predictions for a ticker or date range |
+| `get_prediction_track_record` | Segment hit rate, average return, and overconfidence |
+| `get_segment_calibration` | Accuracy and Brier score by sector and prediction type |
 
 ## Configuration
 
@@ -111,7 +113,46 @@ REDDIT_USER_AGENT="tradingai-news-mcp/0.1 by tradingai"
 TRADINGAI_REGIME_PROVIDERS=yfinance,fred
 TRADINGAI_PREDICT_WEIGHTS=0.45,0.35,0.20
 TRADINGAI_PREDICT_HORIZONS=1,5,20
-TRADINGAI_PREDICT_DATABASE_PATH=./data/predictions.sqlite3
+TRADINGAI_DATABASE_URL=postgresql://localhost:5432/tradingai
+TRADINGAI_SYNC_TICKERS=AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY
+```
+
+## PostgreSQL learning pipeline
+
+Predictions, prices, news, and outcomes are stored in PostgreSQL for segment-level learning.
+
+### Conda Postgres setup
+
+```bash
+conda activate stocks
+conda install -c conda-forge postgresql psycopg
+bash scripts/pg-init.sh
+```
+
+### Data sync commands
+
+```bash
+uv run tradingai-sync-stocks
+uv run tradingai-sync-prices
+uv run tradingai-sync-news
+```
+
+### Track-record example prompt
+
+- "What is our hit rate for earnings-driven rallies in semiconductor stocks over 5 days?"
+
+Use `get_prediction_track_record` and `get_segment_calibration` from `tradingai-predict`.
+
+### Daily evaluation cron
+
+```bash
+0 18 * * 1-5  uv run tradingai-sync-prices && uv run tradingai-predict-eval
+```
+
+Optional one-time SQLite migration:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py
 ```
 
 Optional providers:
