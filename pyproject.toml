@@ -27,6 +27,8 @@ dev = [
 tradingai-mcp = "tradingai.server:main"
 tradingai-news-mcp = "tradingai.news.server:main"
 tradingai-regime-mcp = "tradingai.regime.server:main"
+tradingai-predict-mcp = "tradingai.predict.server:main"
+tradingai-predict-eval = "tradingai.predict.evaluation.runner:main"
 
 [build-system]
 requires = ["hatchling"]

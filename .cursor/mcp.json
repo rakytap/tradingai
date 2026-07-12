@@ -20,6 +20,13 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env"
+    },
+    "tradingai-predict": {
+      "type": "stdio",
+      "command": "/home/rakytap/.conda/envs/stocks/bin/tradingai-predict-mcp",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env"
     }
   }
 }

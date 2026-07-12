@@ -1,6 +1,6 @@
 # Trading AI
 
-A Python MCP server suite that exposes stock technical-analysis, news/sentiment, and market-regime tools to Cursor.
+A Python MCP server suite that exposes stock technical-analysis, news/sentiment, market-regime, and predictive signal-fusion tools to Cursor.
 
 ## Features
 
@@ -8,6 +8,7 @@ A Python MCP server suite that exposes stock technical-analysis, news/sentiment,
 - Technical MCP tools for OHLCV data, indicator calculation, setup analysis, and multi-symbol comparison
 - Separate news/sentiment MCP for headlines, SEC filings, earnings materials, analyst actions, and structured sentiment reports
 - Separate market-regime MCP for bull/bear/sideways/high-volatility detection from macro features
+- Separate predictive MCP that fuses technical, news, and regime signals into deterministic multi-horizon probabilities with SQLite-backed evaluation
 - stdio transport for local Cursor integration
 
 ## Prerequisites
@@ -44,7 +45,7 @@ If `uv` is not installed, update [`.cursor/mcp.json`](.cursor/mcp.json) to use t
 
 This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing dependencies:
 
-1. Restart Cursor or toggle the `tradingai`, `tradingai-news`, and `tradingai-regime` MCP servers in **Customize**
+1. Restart Cursor or toggle the `tradingai`, `tradingai-news`, `tradingai-regime`, and `tradingai-predict` MCP servers in **Customize**
 2. Check **Output > MCP Logs** if a server does not appear
 3. Ask Cursor to use the tools, for example:
 
@@ -52,6 +53,7 @@ This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing depe
 - "Compare technical signals for AAPL, MSFT, and GOOGL."
 - "Use tradingai-news to analyze sentiment for NVDA and return catalysts and risks."
 - "Use tradingai-regime to detect the current market regime and recommended strategy."
+- "Use tradingai-predict to generate a multi-horizon prediction for AAPL."
 
 ## MCP Servers
 
@@ -84,6 +86,17 @@ This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing depe
 | `detect_market_regime` | Primary tool — regime label, recommended strategy, confidence, and signal breakdown |
 | `explain_regime` | Human-readable explanation of the current regime |
 
+### `tradingai-predict` — Predictive Signal Fusion
+
+| Tool | Description |
+|------|-------------|
+| `get_agent_signals` | Normalized technical, news, and regime signals for a ticker |
+| `generate_prediction` | Primary tool — fuse signals, compute 1/5/20-day probabilities, auto-save to SQLite |
+| `explain_prediction` | Human-readable evidence summary with deterministic probability numbers |
+| `evaluate_predictions` | Backfill actual returns for mature predictions |
+| `get_evaluation_metrics` | Accuracy, precision/recall, MAE, Brier score, top-10 ranked return |
+| `get_prediction_history` | Query stored predictions for a ticker or date range |
+
 ## Configuration
 
 Set providers in `.env`:
@@ -96,6 +109,9 @@ TRADINGAI_SOCIAL_WEIGHT=0.45
 SEC_IDENTITY="Your Name your@email.com"
 REDDIT_USER_AGENT="tradingai-news-mcp/0.1 by tradingai"
 TRADINGAI_REGIME_PROVIDERS=yfinance,fred
+TRADINGAI_PREDICT_WEIGHTS=0.45,0.35,0.20
+TRADINGAI_PREDICT_HORIZONS=1,5,20
+TRADINGAI_PREDICT_DATABASE_PATH=./data/predictions.sqlite3
 ```
 
 Optional providers:
@@ -126,6 +142,13 @@ Run the MCP servers directly:
 uv run tradingai-mcp
 uv run tradingai-news-mcp
 uv run tradingai-regime-mcp
+uv run tradingai-predict-mcp
+```
+
+Run the daily evaluation loop (for cron/systemd):
+
+```bash
+uv run tradingai-predict-eval
 ```
 
 Run tests:
