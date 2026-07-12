@@ -1,12 +1,13 @@
 # Trading AI
 
-A Python MCP server suite that exposes stock technical-analysis and news/sentiment tools to Cursor.
+A Python MCP server suite that exposes stock technical-analysis, news/sentiment, and market-regime tools to Cursor.
 
 ## Features
 
 - Pluggable market data providers (`yfinance` today, Alpaca stub for later)
 - Technical MCP tools for OHLCV data, indicator calculation, setup analysis, and multi-symbol comparison
 - Separate news/sentiment MCP for headlines, SEC filings, earnings materials, analyst actions, and structured sentiment reports
+- Separate market-regime MCP for bull/bear/sideways/high-volatility detection from macro features
 - stdio transport for local Cursor integration
 
 ## Prerequisites
@@ -43,13 +44,14 @@ If `uv` is not installed, update [`.cursor/mcp.json`](.cursor/mcp.json) to use t
 
 This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing dependencies:
 
-1. Restart Cursor or toggle the `tradingai` and `tradingai-news` MCP servers in **Customize**
+1. Restart Cursor or toggle the `tradingai`, `tradingai-news`, and `tradingai-regime` MCP servers in **Customize**
 2. Check **Output > MCP Logs** if a server does not appear
 3. Ask Cursor to use the tools, for example:
 
 - "Use tradingai to analyze the technical setup for AAPL over 6 months."
 - "Compare technical signals for AAPL, MSFT, and GOOGL."
 - "Use tradingai-news to analyze sentiment for NVDA and return catalysts and risks."
+- "Use tradingai-regime to detect the current market regime and recommended strategy."
 
 ## MCP Servers
 
@@ -74,6 +76,14 @@ This repo includes [`.cursor/mcp.json`](.cursor/mcp.json). After installing depe
 | `fetch_social_sentiment` | Filtered Reddit/X posts with social-only sentiment score |
 | `analyze_news_sentiment` | Structured sentiment report with catalysts and risk factors |
 
+### `tradingai-regime` — Market Regime
+
+| Tool | Description |
+|------|-------------|
+| `fetch_macro_features` | Raw and derived macro feature values (VIX, SPY trend, yields, inflation, credit) |
+| `detect_market_regime` | Primary tool — regime label, recommended strategy, confidence, and signal breakdown |
+| `explain_regime` | Human-readable explanation of the current regime |
+
 ## Configuration
 
 Set providers in `.env`:
@@ -85,6 +95,7 @@ TRADINGAI_SOCIAL_PROVIDERS=reddit
 TRADINGAI_SOCIAL_WEIGHT=0.45
 SEC_IDENTITY="Your Name your@email.com"
 REDDIT_USER_AGENT="tradingai-news-mcp/0.1 by tradingai"
+TRADINGAI_REGIME_PROVIDERS=yfinance,fred
 ```
 
 Optional providers:
@@ -93,6 +104,7 @@ Optional providers:
 - `finnhub` — requires `FINNHUB_API_KEY`
 - `x` — requires `X_BEARER_TOKEN` (X API v2 bearer token)
 - `reddit` — uses public JSON API; if blocked, set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`
+- `fred` — requires `FRED_API_KEY` (free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)); enriches yield curve, inflation, and credit spread signals
 
 Social sentiment notes:
 
@@ -113,6 +125,7 @@ Run the MCP servers directly:
 ```bash
 uv run tradingai-mcp
 uv run tradingai-news-mcp
+uv run tradingai-regime-mcp
 ```
 
 Run tests:
