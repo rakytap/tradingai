@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+from tradingai.news.analysis.social_noise_filter import filter_social_posts
+from tradingai.news.analysis.sentiment_scorer import score_social_posts
+from tradingai.news.analysis.synthesizer import synthesize_sentiment_report
+from tradingai.news.models import AnalystAction, EarningsMaterial, FilingItem, NewsItem, SocialPost
+from tradingai.news.providers.registry import (
+    get_enabled_news_providers,
+    get_enabled_social_providers,
+    get_filings_provider,
+)
+from tradingai.news.providers.rss_provider import RssNewsProvider
+
+
+def _dedupe_news(items: list[NewsItem]) -> list[NewsItem]:
+    seen: set[str] = set()
+    deduped: list[NewsItem] = []
+    for item in items:
+        key = item.title.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _collect_from_providers(
+    ticker: str,
+    method_name: str,
+    *,
+    count: int = 10,
+    rss_url: str | None = None,
+) -> tuple[list, list[str]]:
+    collected = []
+    sources: list[str] = []
+    for provider in get_enabled_news_providers():
+        try:
+            if isinstance(provider, RssNewsProvider):
+                if method_name == "fetch_news":
+                    items = provider._fetch_feed_items(
+                        ticker, rss_url=rss_url, count=count
+                    )
+                elif method_name == "fetch_press_releases":
+                    items = provider._fetch_feed_items(
+                        ticker, rss_url=rss_url, count=count
+                    )
+                elif method_name == "fetch_analyst_actions":
+                    items = provider.fetch_analyst_actions(ticker, count=count)
+                else:
+                    continue
+            elif method_name == "fetch_news":
+                items = provider.fetch_news(ticker, count=count)
+            elif method_name == "fetch_press_releases":
+                items = provider.fetch_press_releases(ticker, count=count)
+            elif method_name == "fetch_analyst_actions":
+                items = provider.fetch_analyst_actions(ticker, count=count)
+            else:
+                continue
+        except ValueError:
+            continue
+        except Exception:
+            continue
+        if items:
+            sources.append(provider.name)
+            collected.extend(items)
+    return collected, sources
+
+
+def _collect_social_posts(ticker: str, count: int = 15) -> tuple[list[SocialPost], list[str], int]:
+    collected: list[SocialPost] = []
+    sources: list[str] = []
+    for provider in get_enabled_social_providers():
+        try:
+            posts = provider.fetch_posts(ticker, count=count)
+        except ValueError:
+            continue
+        except Exception:
+            continue
+        if posts:
+            sources.append(provider.name)
+            collected.extend(posts)
+    filtered, noise_removed = filter_social_posts(collected, ticker)
+    return filtered, sources, noise_removed
+
+
+def fetch_social_sentiment(ticker: str, count: int = 15) -> dict:
+    """Fetch filtered Reddit/X posts and a social-only sentiment score."""
+    posts, sources, noise_removed = _collect_social_posts(ticker, count=count)
+    social_score = score_social_posts(posts)
+    return {
+        "ticker": ticker.upper(),
+        "count": len(posts),
+        "noise_filtered": noise_removed,
+        "social_sentiment": round(social_score, 2) if social_score is not None else None,
+        "sources": sorted(set(sources)),
+        "items": [item.model_dump(mode="json") for item in posts[:count]],
+    }
+
+
+def fetch_company_news(
+    ticker: str,
+    count: int = 10,
+    rss_url: str | None = None,
+) -> dict:
+    items, sources = _collect_from_providers(
+        ticker, "fetch_news", count=count, rss_url=rss_url
+    )
+    deduped = _dedupe_news(items)
+    return {
+        "ticker": ticker.upper(),
+        "count": len(deduped),
+        "sources": sorted(set(sources)),
+        "items": [item.model_dump(mode="json") for item in deduped[:count]],
+    }
+
+
+def fetch_press_releases(
+    ticker: str,
+    count: int = 10,
+    rss_url: str | None = None,
+) -> dict:
+    items, sources = _collect_from_providers(
+        ticker, "fetch_press_releases", count=count, rss_url=rss_url
+    )
+    deduped = _dedupe_news(items)
+    return {
+        "ticker": ticker.upper(),
+        "count": len(deduped),
+        "sources": sorted(set(sources)),
+        "items": [item.model_dump(mode="json") for item in deduped[:count]],
+    }
+
+
+def fetch_sec_filings(
+    ticker: str,
+    forms: list[str] | None = None,
+    count: int = 5,
+) -> dict:
+    provider = get_filings_provider("sec_edgar")
+    try:
+        filings = provider.fetch_filings(ticker, forms=forms, count=count)
+    except ValueError as exc:
+        return {
+            "ticker": ticker.upper(),
+            "count": 0,
+            "sources": [],
+            "items": [],
+            "error": str(exc),
+        }
+    return {
+        "ticker": ticker.upper(),
+        "count": len(filings),
+        "sources": ["sec_edgar"],
+        "items": [item.model_dump(mode="json") for item in filings],
+    }
+
+
+def fetch_earnings_materials(ticker: str) -> dict:
+    provider = get_filings_provider("sec_edgar")
+    try:
+        materials = provider.fetch_earnings_materials(ticker)
+    except ValueError as exc:
+        return {
+            "ticker": ticker.upper(),
+            "sources": [],
+            "materials": None,
+            "error": str(exc),
+        }
+    return {
+        "ticker": ticker.upper(),
+        "sources": ["sec_edgar"] if materials else [],
+        "materials": materials.model_dump(mode="json") if materials else None,
+    }
+
+
+def fetch_analyst_actions(ticker: str, count: int = 10) -> dict:
+    actions, sources = _collect_from_providers(
+        ticker, "fetch_analyst_actions", count=count
+    )
+    return {
+        "ticker": ticker.upper(),
+        "count": len(actions),
+        "sources": sorted(set(sources)),
+        "items": [item.model_dump(mode="json") for item in actions[:count]],
+    }
+
+
+def analyze_news_sentiment(
+    ticker: str,
+    count: int = 10,
+    rss_url: str | None = None,
+) -> dict:
+    news_items, news_sources = _collect_from_providers(
+        ticker, "fetch_news", count=count, rss_url=rss_url
+    )
+    press_items, press_sources = _collect_from_providers(
+        ticker, "fetch_press_releases", count=count, rss_url=rss_url
+    )
+    analyst_actions, analyst_sources = _collect_from_providers(
+        ticker, "fetch_analyst_actions", count=count
+    )
+    social_posts, social_sources, noise_removed = _collect_social_posts(
+        ticker, count=count
+    )
+
+    filings: list[FilingItem] = []
+    filing_sources: list[str] = []
+    earnings: EarningsMaterial | None = None
+
+    try:
+        filings_provider = get_filings_provider("sec_edgar")
+        filings = filings_provider.fetch_filings(ticker, count=3)
+        filing_sources.append("sec_edgar")
+        earnings = filings_provider.fetch_earnings_materials(ticker)
+    except ValueError:
+        pass
+    except Exception:
+        pass
+
+    report = synthesize_sentiment_report(
+        ticker=ticker,
+        news=_dedupe_news(news_items),
+        press_releases=_dedupe_news(press_items),
+        filings=filings,
+        analyst_actions=analyst_actions,
+        earnings=earnings,
+        social_posts=social_posts,
+        sources_used=sorted(
+            set(news_sources + press_sources + analyst_sources + filing_sources + social_sources)
+        ),
+    )
+
+    social_score = score_social_posts(social_posts)
+
+    return {
+        **report.to_public_dict(),
+        "headline_count": len(_dedupe_news(news_items)),
+        "press_release_count": len(_dedupe_news(press_items)),
+        "analyst_action_count": len(analyst_actions),
+        "filing_count": len(filings),
+        "social_post_count": len(social_posts),
+        "social_noise_filtered": noise_removed,
+        "social_sentiment": round(social_score, 2) if social_score is not None else None,
+    }
