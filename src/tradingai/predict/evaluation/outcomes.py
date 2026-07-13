@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from tradingai.data.repositories.daily_prices import get_forward_return
 from tradingai.predict.storage.repository import (
@@ -9,12 +9,18 @@ from tradingai.predict.storage.repository import (
 )
 
 
+def _to_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def evaluate_pending_outcomes(
     horizon_days: int,
     *,
     as_of: datetime | None = None,
 ) -> dict:
-    as_of = as_of or datetime.utcnow()
+    as_of = _to_utc(as_of) if as_of else datetime.now(timezone.utc)
     pending = get_predictions_pending_outcomes(horizon_days)
     evaluated = 0
     skipped = 0
@@ -26,6 +32,7 @@ def evaluate_pending_outcomes(
             prediction_dt = datetime.fromisoformat(timestamp)
         else:
             prediction_dt = timestamp
+        prediction_dt = _to_utc(prediction_dt)
         if prediction_dt + timedelta(days=horizon_days + 5) > as_of:
             skipped += 1
             continue

@@ -30,6 +30,21 @@ def adapt_news_signal(ticker: str, payload: dict) -> AgentSignal:
 
 def fetch_news_signal(ticker: str) -> AgentSignal:
     from tradingai.news.tools.news import analyze_news_sentiment
+    from tradingai.data.repositories.news_events import (
+        get_latest_sentiment_snapshot,
+        save_sentiment_snapshot,
+    )
+
+    cached = get_latest_sentiment_snapshot(ticker, max_age_minutes=120)
+    if cached is not None:
+        cached = {**cached, "cache": {"hit": True, "max_age_minutes": 120}}
+        return adapt_news_signal(ticker, cached)
 
     payload = analyze_news_sentiment(ticker)
+    try:
+        save_sentiment_snapshot(ticker, payload=payload)
+    except Exception:
+        # Cache write should never block predictions.
+        pass
+    payload = {**payload, "cache": {"hit": False, "max_age_minutes": 120}}
     return adapt_news_signal(ticker, payload)

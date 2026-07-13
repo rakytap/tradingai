@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from tradingai.data.connection import initialize_schema
+from tradingai.data.jobs.progress import log_done, log_error, log_progress, log_start
 from tradingai.data.repositories.daily_prices import get_latest_date, upsert_daily_prices
 from tradingai.data.repositories.stocks import list_tickers
 from tradingai.providers.registry import get_provider
@@ -28,11 +29,13 @@ def sync_daily_prices(tickers: list[str] | None = None, period: str = "2y") -> d
     initialize_schema()
     provider = get_provider()
     tickers = tickers or list_tickers()
+    total = len(tickers)
+    log_start("tradingai-sync-prices", total)
     synced = 0
     rows_written = 0
     errors: list[str] = []
 
-    for ticker in tickers:
+    for index, ticker in enumerate(tickers, start=1):
         try:
             latest = get_latest_date(ticker)
             fetch_period = period
@@ -44,11 +47,21 @@ def sync_daily_prices(tickers: list[str] | None = None, period: str = "2y") -> d
                 rows = [row for row in rows if row["date"] > latest]
             if not rows and latest is not None:
                 synced += 1
+                log_progress(index, total, ticker, f"up to date (latest {latest})")
                 continue
-            rows_written += upsert_daily_prices(ticker, rows)
+            written = upsert_daily_prices(ticker, rows)
+            rows_written += written
             synced += 1
+            if written:
+                latest_date = rows[-1]["date"]
+                log_progress(index, total, ticker, f"{written} row(s), latest {latest_date}")
+            else:
+                log_progress(index, total, ticker, "no new rows")
         except Exception as exc:
             errors.append(f"{ticker}: {exc}")
+            log_error(index, total, ticker, str(exc))
+
+    log_done("tradingai-sync-prices", synced, total, rows_written=rows_written, failed=len(errors))
 
     return {"synced": synced, "rows_written": rows_written, "errors": errors}
 
@@ -56,7 +69,9 @@ def sync_daily_prices(tickers: list[str] | None = None, period: str = "2y") -> d
 def main() -> None:
     import json
 
-    print(json.dumps(sync_daily_prices(), indent=2))
+    result = sync_daily_prices()
+    print()
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

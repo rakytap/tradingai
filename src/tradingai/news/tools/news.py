@@ -30,9 +30,10 @@ def _collect_from_providers(
     *,
     count: int = 10,
     rss_url: str | None = None,
-) -> tuple[list, list[str]]:
+) -> tuple[list, list[str], list[str]]:
     collected = []
-    sources: list[str] = []
+    sources_with_data: list[str] = []
+    sources_checked: list[str] = []
     for provider in get_enabled_news_providers():
         try:
             if isinstance(provider, RssNewsProvider):
@@ -59,33 +60,40 @@ def _collect_from_providers(
         except ValueError:
             continue
         except Exception:
+            sources_checked.append(provider.name)
             continue
+        sources_checked.append(provider.name)
         if items:
-            sources.append(provider.name)
+            sources_with_data.append(provider.name)
             collected.extend(items)
-    return collected, sources
+    return collected, sources_with_data, sources_checked
 
 
-def _collect_social_posts(ticker: str, count: int = 15) -> tuple[list[SocialPost], list[str], int]:
+def _collect_social_posts(
+    ticker: str, count: int = 15
+) -> tuple[list[SocialPost], list[str], list[str], int]:
     collected: list[SocialPost] = []
-    sources: list[str] = []
+    sources_with_data: list[str] = []
+    sources_checked: list[str] = []
     for provider in get_enabled_social_providers():
         try:
             posts = provider.fetch_posts(ticker, count=count)
         except ValueError:
             continue
         except Exception:
+            sources_checked.append(provider.name)
             continue
+        sources_checked.append(provider.name)
         if posts:
-            sources.append(provider.name)
+            sources_with_data.append(provider.name)
             collected.extend(posts)
     filtered, noise_removed = filter_social_posts(collected, ticker)
-    return filtered, sources, noise_removed
+    return filtered, sources_with_data, sources_checked, noise_removed
 
 
 def fetch_social_sentiment(ticker: str, count: int = 15) -> dict:
     """Fetch filtered Reddit/X posts and a social-only sentiment score."""
-    posts, sources, noise_removed = _collect_social_posts(ticker, count=count)
+    posts, sources, _, noise_removed = _collect_social_posts(ticker, count=count)
     social_score = score_social_posts(posts)
     return {
         "ticker": ticker.upper(),
@@ -102,7 +110,7 @@ def fetch_company_news(
     count: int = 10,
     rss_url: str | None = None,
 ) -> dict:
-    items, sources = _collect_from_providers(
+    items, sources, _ = _collect_from_providers(
         ticker, "fetch_news", count=count, rss_url=rss_url
     )
     deduped = _dedupe_news(items)
@@ -119,7 +127,7 @@ def fetch_press_releases(
     count: int = 10,
     rss_url: str | None = None,
 ) -> dict:
-    items, sources = _collect_from_providers(
+    items, sources, _ = _collect_from_providers(
         ticker, "fetch_press_releases", count=count, rss_url=rss_url
     )
     deduped = _dedupe_news(items)
@@ -174,7 +182,7 @@ def fetch_earnings_materials(ticker: str) -> dict:
 
 
 def fetch_analyst_actions(ticker: str, count: int = 10) -> dict:
-    actions, sources = _collect_from_providers(
+    actions, sources, _ = _collect_from_providers(
         ticker, "fetch_analyst_actions", count=count
     )
     return {
@@ -190,32 +198,48 @@ def analyze_news_sentiment(
     count: int = 10,
     rss_url: str | None = None,
 ) -> dict:
-    news_items, news_sources = _collect_from_providers(
+    news_items, news_sources, news_checked = _collect_from_providers(
         ticker, "fetch_news", count=count, rss_url=rss_url
     )
-    press_items, press_sources = _collect_from_providers(
+    press_items, press_sources, press_checked = _collect_from_providers(
         ticker, "fetch_press_releases", count=count, rss_url=rss_url
     )
-    analyst_actions, analyst_sources = _collect_from_providers(
+    analyst_actions, analyst_sources, analyst_checked = _collect_from_providers(
         ticker, "fetch_analyst_actions", count=count
     )
-    social_posts, social_sources, noise_removed = _collect_social_posts(
+    social_posts, social_sources, social_checked, noise_removed = _collect_social_posts(
         ticker, count=count
     )
 
     filings: list[FilingItem] = []
     filing_sources: list[str] = []
+    filing_checked: list[str] = []
     earnings: EarningsMaterial | None = None
 
     try:
         filings_provider = get_filings_provider("sec_edgar")
+        filing_checked.append("sec_edgar")
         filings = filings_provider.fetch_filings(ticker, count=3)
-        filing_sources.append("sec_edgar")
         earnings = filings_provider.fetch_earnings_materials(ticker)
+        if filings or earnings:
+            filing_sources.append("sec_edgar")
     except ValueError:
         pass
     except Exception:
-        pass
+        filing_checked.append("sec_edgar")
+
+    sources_with_data = sorted(
+        set(news_sources + press_sources + analyst_sources + filing_sources + social_sources)
+    )
+    sources_checked = sorted(
+        set(
+            news_checked
+            + press_checked
+            + analyst_checked
+            + social_checked
+            + filing_checked
+        )
+    )
 
     report = synthesize_sentiment_report(
         ticker=ticker,
@@ -225,9 +249,7 @@ def analyze_news_sentiment(
         analyst_actions=analyst_actions,
         earnings=earnings,
         social_posts=social_posts,
-        sources_used=sorted(
-            set(news_sources + press_sources + analyst_sources + filing_sources + social_sources)
-        ),
+        sources_used=sources_with_data,
     )
 
     social_score = score_social_posts(social_posts)
@@ -241,4 +263,8 @@ def analyze_news_sentiment(
         "social_post_count": len(social_posts),
         "social_noise_filtered": noise_removed,
         "social_sentiment": round(social_score, 2) if social_score is not None else None,
+        "source_stats": {
+            "checked": sources_checked,
+            "with_data": sources_with_data,
+        },
     }
