@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from tradingai.data.repositories import predictions as predictions_repo
 from tradingai.data.repositories.stocks import get_stock, upsert_stock
+from tradingai.data.stock_metadata import resolve_stock_metadata
 from tradingai.predict.models import PredictionReport
 from tradingai.predict.tagging.prediction_tagger import build_prediction_metadata
 
@@ -13,14 +14,12 @@ def ensure_stock(ticker: str) -> dict | None:
     if stock is not None:
         return stock
     try:
-        import yfinance as yf
-
-        info = yf.Ticker(ticker).info
+        metadata = resolve_stock_metadata(ticker)
         upsert_stock(
             ticker,
-            sector=info.get("sector"),
-            industry=info.get("industry"),
-            market_cap=info.get("marketCap"),
+            sector=metadata.sector,
+            industry=metadata.industry,
+            market_cap=metadata.market_cap,
         )
     except Exception:
         upsert_stock(ticker)

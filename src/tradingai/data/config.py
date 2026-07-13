@@ -22,3 +22,11 @@ def get_sync_tickers() -> tuple[str, ...]:
     if not raw:
         return DEFAULT_SYNC_TICKERS
     return tuple(ticker.strip().upper() for ticker in raw.split(",") if ticker.strip())
+
+
+@lru_cache
+def get_etf_tickers() -> frozenset[str]:
+    raw = os.getenv("TRADINGAI_ETF_TICKERS", "")
+    if not raw:
+        return frozenset()
+    return frozenset(ticker.strip().upper() for ticker in raw.split(",") if ticker.strip())

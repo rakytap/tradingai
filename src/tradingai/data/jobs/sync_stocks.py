@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import yfinance as yf
-
 from tradingai.data.config import get_sync_tickers
 from tradingai.data.connection import initialize_schema
 from tradingai.data.jobs.progress import log_done, log_error, log_progress, log_start
 from tradingai.data.repositories.stocks import upsert_stock
+from tradingai.data.stock_metadata import resolve_stock_metadata
 
 
 def sync_stocks(tickers: list[str] | None = None) -> dict:
@@ -18,19 +17,17 @@ def sync_stocks(tickers: list[str] | None = None) -> dict:
 
     for index, ticker in enumerate(tickers, start=1):
         try:
-            info = yf.Ticker(ticker).info
-            sector = info.get("sector")
-            industry = info.get("industry")
+            metadata = resolve_stock_metadata(ticker)
             upsert_stock(
                 ticker,
-                sector=sector,
-                industry=industry,
-                market_cap=info.get("marketCap"),
+                sector=metadata.sector,
+                industry=metadata.industry,
+                market_cap=metadata.market_cap,
             )
             synced += 1
-            detail = sector or "unknown sector"
-            if industry and industry != sector:
-                detail = f"{detail} / {industry}"
+            detail = metadata.sector or "unknown sector"
+            if metadata.industry and metadata.industry != metadata.sector:
+                detail = f"{detail} / {metadata.industry}"
             log_progress(index, total, ticker, detail)
         except Exception as exc:
             errors.append(f"{ticker}: {exc}")
