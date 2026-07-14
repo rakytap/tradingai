@@ -17,7 +17,7 @@ def add_direction_label(
 
 
 def labeled_rows(frame: pd.DataFrame, *, horizon_days: int) -> pd.DataFrame:
-    from tradingai.analysis.ml.features import FEATURE_COLUMNS
+    from tradingai.analysis.ml.features import get_feature_columns
 
     labeled = add_direction_label(frame, horizon_days=horizon_days)
-    return labeled.dropna(subset=FEATURE_COLUMNS + ["direction_up"]).copy()
+    return labeled.dropna(subset=get_feature_columns() + ["direction_up"]).copy()

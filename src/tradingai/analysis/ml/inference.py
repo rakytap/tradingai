@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from tradingai.analysis.ml.artifacts import artifact_exists, get_manifest_version, load_artifact
+from tradingai.analysis.ml.artifacts import (
+    artifact_exists,
+    get_manifest_version,
+    load_artifact,
+    validate_manifest_features,
+)
 from tradingai.analysis.ml.config import get_default_ml_model, get_ml_benchmark, get_model_dir
-from tradingai.analysis.ml.features import FEATURE_COLUMNS, latest_feature_vector
-from tradingai.analysis.ml.dataset import load_ticker_ohlcv
+from tradingai.analysis.ml.features import get_feature_columns, latest_feature_vector
+from tradingai.analysis.ml.ohlcv import load_ticker_ohlcv
 from tradingai.providers.registry import get_provider
 
 
@@ -53,10 +58,12 @@ def predict_direction(
         benchmark_df=benchmark_df,
         benchmark_symbol=benchmark,
     )
-    if any(value is None for value in snapshot.values()):
+    feature_columns = get_feature_columns()
+    validate_manifest_features(feature_columns, model_dir=base_dir)
+    if any(snapshot.get(column) is None for column in feature_columns):
         raise ValueError("Latest feature vector contains missing values; need more price history.")
 
-    X = np.array([[snapshot[column] for column in FEATURE_COLUMNS]], dtype=float)
+    X = np.array([[snapshot[column] for column in feature_columns]], dtype=float)
     predictor = load_artifact(selected_model, horizon_days=horizon_days, model_dir=base_dir)
     probabilities = predictor.predict_proba(X)[0]
     classes = getattr(predictor, "classes_", None)

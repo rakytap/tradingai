@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from tradingai.regime.analysis.historical import macro_features_as_of
 from tradingai.regime.models import MacroFeatures
 from tradingai.regime.providers.base import MacroDataProvider
 
@@ -39,13 +40,6 @@ def _normalize_close(df: pd.DataFrame) -> pd.Series:
     return df["Close"]
 
 
-def _percentile_rank(series: pd.Series, value: float) -> float:
-    clean = series.dropna()
-    if clean.empty:
-        return 50.0
-    return float((clean <= value).mean() * 100.0)
-
-
 class YFinanceMacroProvider(MacroDataProvider):
     name = "yfinance"
 
@@ -67,29 +61,13 @@ class YFinanceMacroProvider(MacroDataProvider):
         hyg = self._history("HYG", period="1y")
         lqd = self._history("LQD", period="1y")
 
-        spy_close = float(spy.iloc[-1])
-        spy_sma_50 = float(spy.tail(50).mean())
-        spy_sma_200 = float(spy.tail(200).mean()) if len(spy) >= 200 else None
-        lookback = min(126, len(spy) - 1)
-        spy_return_6m = None
-        if lookback > 0:
-            spy_return_6m = float((spy.iloc[-1] / spy.iloc[-lookback] - 1.0) * 100.0)
-
-        vix_value = float(vix.iloc[-1])
-        vix_pct = _percentile_rank(vix, vix_value)
-
-        hyg_lqd_ratio = None
-        if not hyg.empty and not lqd.empty:
-            hyg_lqd_ratio = float(hyg.iloc[-1] / lqd.iloc[-1])
-
-        return MacroFeatures(
-            vix=vix_value,
-            vix_percentile_1y=vix_pct,
-            spy_close=spy_close,
-            spy_sma_50=spy_sma_50,
-            spy_sma_200=spy_sma_200,
-            spy_return_6m_pct=spy_return_6m,
-            treasury_10y=float(tnx.iloc[-1]) if not tnx.empty else None,
-            hyg_lqd_ratio=hyg_lqd_ratio,
+        as_of = spy.index[-1].date()
+        return macro_features_as_of(
+            spy=spy,
+            vix=vix,
+            hyg=hyg,
+            lqd=lqd,
+            as_of=as_of,
+            tnx=tnx,
             sources_used=[self.name],
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from tradingai.analysis.ml.config import get_ml_include_regime, get_macro_sync_tickers
 from tradingai.data.connection import initialize_schema
 from tradingai.data.jobs.progress import log_done, log_error, log_progress, log_start
 from tradingai.data.repositories.daily_prices import get_latest_date, upsert_daily_prices
@@ -29,6 +30,10 @@ def sync_daily_prices(tickers: list[str] | None = None, period: str = "2y") -> d
     initialize_schema()
     provider = get_provider()
     tickers = tickers or list_tickers()
+    if get_ml_include_regime():
+        macro_tickers = get_macro_sync_tickers()
+        seen = {ticker.upper() for ticker in tickers}
+        tickers = list(tickers) + [ticker for ticker in macro_tickers if ticker.upper() not in seen]
     total = len(tickers)
     log_start("tradingai-sync-prices", total)
     synced = 0

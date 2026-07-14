@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 import numpy as np
 
 from tradingai.analysis.ml.artifacts import save_artifact, save_manifest
-from tradingai.analysis.ml.config import TRAIN_FRACTION, get_model_dir
+from tradingai.analysis.ml.config import TRAIN_FRACTION, get_ml_include_regime, get_model_dir
 from tradingai.analysis.ml.dataset import (
     build_training_dataset,
     chronological_split,
     split_features_labels,
 )
 from tradingai.analysis.ml.evaluation import evaluate_predictions, rank_models
+from tradingai.analysis.ml.features import get_feature_columns
 from tradingai.analysis.ml.registry import get_predictor, list_predictors
 from tradingai.data.config import get_sync_tickers
 from tradingai.data.connection import initialize_schema
@@ -47,6 +48,8 @@ def train_models(
         "tickers": tickers,
         "horizons": list(horizons),
         "models": list_predictors(),
+        "feature_columns": get_feature_columns(),
+        "include_regime": get_ml_include_regime(),
         "results": {},
     }
 

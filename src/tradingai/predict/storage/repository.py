@@ -81,8 +81,17 @@ def get_predictions_pending_outcomes(horizon_days: int) -> list[dict]:
     return predictions_repo.get_pending_predictions(horizon_days)
 
 
-def save_outcome(prediction_id: int, actual_return_pct: float) -> None:
-    predictions_repo.update_prediction_outcome(prediction_id, actual_return_pct)
+def save_outcome(
+    prediction_id: int,
+    actual_return_pct: float,
+    *,
+    probability_up: float,
+) -> None:
+    predictions_repo.update_prediction_outcome(
+        prediction_id,
+        actual_return_pct,
+        probability_up,
+    )
 
 
 def get_evaluated_rows(horizon_days: int | None = None) -> list[dict]:

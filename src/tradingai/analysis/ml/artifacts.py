@@ -66,6 +66,40 @@ def get_manifest_version(*, model_dir: Path | None = None) -> str | None:
     return manifest.get("trained_at")
 
 
+def get_manifest_feature_columns(*, model_dir: Path | None = None) -> list[str] | None:
+    manifest = load_manifest(model_dir=model_dir)
+    if not manifest:
+        return None
+    columns = manifest.get("feature_columns")
+    if isinstance(columns, list) and columns:
+        return [str(column) for column in columns]
+    return None
+
+
+def validate_manifest_features(
+    expected_columns: list[str],
+    *,
+    model_dir: Path | None = None,
+) -> None:
+    from tradingai.analysis.ml.config import get_ml_include_regime
+    from tradingai.analysis.ml.features import TECHNICAL_FEATURE_COLUMNS
+
+    manifest_columns = get_manifest_feature_columns(model_dir=model_dir)
+    if manifest_columns is None:
+        if get_ml_include_regime() and expected_columns != TECHNICAL_FEATURE_COLUMNS:
+            raise ValueError(
+                "Trained model artifacts predate regime features. "
+                "Re-run tradingai-train-models to include regime columns."
+            )
+        return
+    if manifest_columns != expected_columns:
+        raise ValueError(
+            "Trained model feature schema does not match current configuration. "
+            f"Expected {expected_columns}, manifest has {manifest_columns}. "
+            "Re-run tradingai-train-models after changing regime features."
+        )
+
+
 def artifact_exists(
     model_name: str,
     *,

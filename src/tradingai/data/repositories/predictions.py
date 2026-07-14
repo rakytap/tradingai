@@ -121,10 +121,13 @@ def get_pending_predictions(
 def update_prediction_outcome(
     prediction_id: int,
     actual_return_pct: float,
+    probability_up: float,
     *,
     database_url: str | None = None,
 ) -> None:
-    direction_correct = actual_return_pct > 0
+    from tradingai.analysis.ml.direction import direction_is_correct
+
+    direction_correct = direction_is_correct(probability_up, actual_return_pct)
     evaluated_at = datetime.now(timezone.utc)
     with get_connection(database_url) as conn:
         conn.execute(

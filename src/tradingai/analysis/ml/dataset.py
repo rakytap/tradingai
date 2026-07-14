@@ -4,40 +4,25 @@ from datetime import date
 
 import pandas as pd
 
-from tradingai.analysis.ml.config import MIN_HISTORY_ROWS, get_ml_benchmark
-from tradingai.analysis.ml.features import FEATURE_COLUMNS, build_indicator_frame
+from tradingai.analysis.ml.config import MIN_HISTORY_ROWS, get_ml_benchmark, get_ml_include_regime
+from tradingai.analysis.ml.features import build_indicator_frame, get_feature_columns
 from tradingai.analysis.ml.labels import labeled_rows
-from tradingai.data.connection import get_connection
+from tradingai.analysis.ml.macro_history import load_macro_histories
+from tradingai.analysis.ml.ohlcv import load_ticker_ohlcv
+from tradingai.analysis.ml.regime_features import REGIME_FEATURE_COLUMNS
+from tradingai.regime.analysis.historical import build_regime_feature_frame
 
+def _join_regime_features(frame: pd.DataFrame, regime_frame: pd.DataFrame) -> pd.DataFrame:
+    if regime_frame.empty:
+        return frame
 
-def load_ticker_ohlcv(
-    ticker: str,
-    *,
-    database_url: str | None = None,
-) -> pd.DataFrame:
-    with get_connection(database_url) as conn:
-        rows = conn.execute(
-            """
-            SELECT date, open, high, low, close, volume
-            FROM daily_prices
-            WHERE ticker = %s
-            ORDER BY date ASC
-            """,
-            (ticker.upper(),),
-        ).fetchall()
-    if not rows:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-
-    dates = [row[0] for row in rows]
-    data = {
-        "open": [float(row[1]) for row in rows],
-        "high": [float(row[2]) for row in rows],
-        "low": [float(row[3]) for row in rows],
-        "close": [float(row[4]) for row in rows],
-        "volume": [int(row[5]) for row in rows],
-    }
-    index = pd.DatetimeIndex(pd.to_datetime(dates))
-    return pd.DataFrame(data, index=index)
+    merged = frame.copy()
+    merged["date"] = pd.to_datetime(merged["date"]).dt.date
+    regime = regime_frame.copy()
+    regime["date"] = pd.to_datetime(regime["date"]).dt.date
+    merged = merged.merge(regime, on="date", how="left")
+    merged = merged.dropna(subset=REGIME_FEATURE_COLUMNS)
+    return merged
 
 
 def build_ticker_dataset(
@@ -48,6 +33,7 @@ def build_ticker_dataset(
     benchmark_symbol: str | None = None,
     min_rows: int = MIN_HISTORY_ROWS,
     database_url: str | None = None,
+    regime_frame: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     ohlcv = load_ticker_ohlcv(ticker, database_url=database_url)
     if len(ohlcv) < min_rows:
@@ -60,6 +46,12 @@ def build_ticker_dataset(
         benchmark_symbol=benchmark,
     )
     features["ticker"] = ticker.upper()
+
+    if get_ml_include_regime() and regime_frame is not None:
+        features = _join_regime_features(features, regime_frame)
+        if features.empty:
+            return pd.DataFrame()
+
     labeled = labeled_rows(features, horizon_days=horizon_days)
     if labeled.empty:
         return pd.DataFrame()
@@ -82,6 +74,14 @@ def build_training_dataset(
             f"Benchmark ticker '{benchmark}' has no price history. Run tradingai-sync-prices first."
         )
 
+    regime_frame: pd.DataFrame | None = None
+    if get_ml_include_regime():
+        macro_histories = load_macro_histories(database_url=database_url)
+        date_index = pd.DatetimeIndex(benchmark_df.index)
+        regime_frame = build_regime_feature_frame(date_index, macro_histories)
+        if regime_frame.empty:
+            raise ValueError("Unable to build regime feature frame from macro histories.")
+
     frames: list[pd.DataFrame] = []
     for ticker in tickers:
         normalized = ticker.upper().strip()
@@ -94,6 +94,7 @@ def build_training_dataset(
             benchmark_symbol=benchmark,
             min_rows=min_rows,
             database_url=database_url,
+            regime_frame=regime_frame,
         )
         if not frame.empty:
             frames.append(frame)
@@ -126,6 +127,6 @@ def chronological_split(
 
 
 def split_features_labels(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    X = frame[FEATURE_COLUMNS].copy()
+    X = frame[get_feature_columns()].copy()
     y = frame["direction_up"].astype(int)
     return X, y

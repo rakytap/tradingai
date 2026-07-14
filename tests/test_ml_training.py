@@ -15,9 +15,9 @@ def _training_frame(rows: int = 400) -> pd.DataFrame:
         "close": np.linspace(100, 150, rows),
         "direction_up": rng.integers(0, 2, size=rows).astype(bool),
     }
-    from tradingai.analysis.ml.features import FEATURE_COLUMNS
+    from tradingai.analysis.ml.features import get_feature_columns
 
-    for column in FEATURE_COLUMNS:
+    for column in get_feature_columns():
         data[column] = rng.normal(size=rows)
     return pd.DataFrame(data)
 

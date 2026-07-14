@@ -288,6 +288,22 @@ TRADINGAI_ML_MODEL=logistic
 TRADINGAI_ML_HORIZON=5
 ```
 
+Direction accuracy, precision, and recall use a shared probability cutoff (default `0.5`):
+
+```
+TRADINGAI_DIRECTION_THRESHOLD=0.5
+```
+
+ML models include point-in-time market regime features (VIX, SPY trend, credit proxy) by default. Sync macro tickers into `daily_prices` for offline training; yfinance is used as fallback when DB history is missing:
+
+```
+TRADINGAI_ML_INCLUDE_REGIME=true
+TRADINGAI_MACRO_SYNC_TICKERS=SPY,VIX,HYG,LQD
+tradingai-sync-prices
+```
+
+After enabling or changing regime features, re-run `tradingai-train-models` — existing artifacts use a different feature schema.
+
 Artifacts are saved under `TRADINGAI_ML_MODEL_DIR` (default `./data/models`) with a `manifest.json` metrics summary.
 
 ### News and sentiment (`tradingai-news`)
