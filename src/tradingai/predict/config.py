@@ -24,6 +24,25 @@ HORIZON_RETURN_MULTIPLIERS = {
 
 
 @lru_cache
+def get_predict_backend() -> str:
+    return os.getenv("TRADINGAI_PREDICT_BACKEND", "fusion").lower().strip()
+
+
+@lru_cache
+def get_ml_model_name() -> str:
+    return os.getenv("TRADINGAI_ML_MODEL", "logistic").lower().strip()
+
+
+@lru_cache
+def get_ml_horizon_days() -> int:
+    raw = os.getenv("TRADINGAI_ML_HORIZON", "5")
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return 5
+
+
+@lru_cache
 def get_fusion_weights() -> tuple[float, float, float]:
     raw = os.getenv("TRADINGAI_PREDICT_WEIGHTS", ",".join(str(w) for w in DEFAULT_WEIGHTS))
     parts = [float(value.strip()) for value in raw.split(",") if value.strip()]

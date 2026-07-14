@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from tradingai.predict.adapters.news import fetch_news_signal
+from tradingai.predict.adapters.ml_technical import fetch_technical_signal_with_backend
 from tradingai.predict.adapters.regime import fetch_regime_signal
-from tradingai.predict.adapters.technical import fetch_technical_signal
+from tradingai.predict.config import (
+    get_ml_horizon_days,
+    get_ml_model_name,
+    get_predict_backend,
+)
 from tradingai.predict.evaluation.metrics import compute_evaluation_metrics
 from tradingai.predict.evaluation.outcomes import evaluate_pending_outcomes
 from tradingai.predict.fusion.scorer import explain_prediction_report, fuse_agent_signals
@@ -16,7 +21,7 @@ from tradingai.predict.storage.repository import (
 
 def get_agent_signals_tool(ticker: str) -> dict:
     signals = [
-        fetch_technical_signal(ticker),
+        fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
         fetch_regime_signal(),
     ]
@@ -28,11 +33,17 @@ def get_agent_signals_tool(ticker: str) -> dict:
 
 def generate_prediction_tool(ticker: str) -> dict:
     signals = [
-        fetch_technical_signal(ticker),
+        fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
         fetch_regime_signal(),
     ]
     report = fuse_agent_signals(ticker, signals)
+    if get_predict_backend() == "ml":
+        report.fusion["backend"] = "ml"
+        report.fusion["ml_model"] = get_ml_model_name()
+        report.fusion["ml_horizon"] = get_ml_horizon_days()
+    else:
+        report.fusion["backend"] = "fusion"
     prediction_ids = save_prediction(report)
     payload = report.to_public_dict()
     payload["prediction_ids"] = prediction_ids
@@ -41,7 +52,7 @@ def generate_prediction_tool(ticker: str) -> dict:
 
 def explain_prediction_tool(ticker: str) -> dict:
     signals = [
-        fetch_technical_signal(ticker),
+        fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
         fetch_regime_signal(),
     ]

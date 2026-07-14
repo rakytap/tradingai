@@ -17,6 +17,9 @@ dependencies = [
     "praw>=7.7",
     "fredapi>=0.5.1",
     "psycopg[binary]>=3.2",
+    "scikit-learn>=1.4",
+    "xgboost>=2.0",
+    "joblib>=1.3",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +37,7 @@ tradingai-predict-batch = "tradingai.predict.jobs.generate_predictions:main"
 tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
 tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"
 tradingai-sync-news = "tradingai.data.jobs.sync_news_events:main"
+tradingai-train-models = "tradingai.analysis.ml.training:main"
 
 [build-system]
 requires = ["hatchling"]

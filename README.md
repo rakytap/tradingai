@@ -264,6 +264,32 @@ Compare technical signals for AAPL, MSFT, and GOOGL.
 
 **Data source:** Live yfinance OHLCV. **Storage:** None (transient).
 
+#### Technical ML models (optional)
+
+Train supervised direction models from indicator features on PostgreSQL price history:
+
+```bash
+tradingai-sync-prices          # ensure daily_prices is populated (~2y recommended)
+tradingai-train-models         # trains baseline, logistic, random_forest, xgboost per horizon
+```
+
+Compare models via MCP:
+
+```
+Use tradingai to compare_technical_models for horizon 5.
+Use tradingai to predict_technical_direction for NVDA with model logistic and horizon 5.
+```
+
+To use ML for the technical signal inside fused predictions, set:
+
+```
+TRADINGAI_PREDICT_BACKEND=ml
+TRADINGAI_ML_MODEL=logistic
+TRADINGAI_ML_HORIZON=5
+```
+
+Artifacts are saved under `TRADINGAI_ML_MODEL_DIR` (default `./data/models`) with a `manifest.json` metrics summary.
+
 ### News and sentiment (`tradingai-news`)
 
 ```
@@ -400,6 +426,8 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | `calculate_indicators` | Compute RSI, MACD, SMA/EMA, Bollinger Bands, ATR, momentum, volatility, volume anomalies, relative strength |
 | `analyze_technical_setup` | Return trend/momentum/volatility signals plus a summary |
 | `compare_technical_signals` | Compare technical bias across multiple tickers |
+| `compare_technical_models` | Compare trained ML models (accuracy, Brier, precision, recall) from the latest manifest |
+| `predict_technical_direction` | Predict up/down probability using a trained ML model (baseline, logistic, random_forest, xgboost) |
 
 ### `tradingai-news` — News / Sentiment
 
@@ -495,7 +523,7 @@ python scripts/migrate_sqlite_to_postgres.py
 
 - Alpaca provider for paper/live market data
 - Portfolio and order tools
-- Supervised weight learning from prediction history
+- Supervised weight learning from prediction history (partially addressed by technical ML models)
 
 ---
 

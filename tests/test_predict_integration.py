@@ -31,7 +31,7 @@ def test_generate_prediction_end_to_end_mocked():
 
     with (
         patch(
-            "tradingai.predict.tools.predict.fetch_technical_signal",
+            "tradingai.predict.tools.predict.fetch_technical_signal_with_backend",
             return_value=adapt_technical_signal("AAPL", technical_payload),
         ),
         patch(

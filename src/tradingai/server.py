@@ -104,6 +104,42 @@ def compare_technical_signals(
     )
 
 
+@mcp.tool()
+def compare_technical_models(horizon_days: int | None = None) -> dict:
+    """Compare trained technical ML models using the latest training manifest.
+
+    Returns accuracy, Brier score, precision, and recall per model. If horizon_days
+    is omitted, metrics for all trained horizons are returned.
+
+    Args:
+        horizon_days: Optional prediction horizon in trading days (e.g. 1, 5, 20).
+    """
+    return technical.compare_technical_models_tool(horizon_days=horizon_days)
+
+
+@mcp.tool()
+def predict_technical_direction(
+    symbol: str,
+    model: str = "logistic",
+    horizon_days: int = 5,
+) -> dict:
+    """Predict up/down probability from a trained technical ML model.
+
+    Supported models: baseline, logistic, random_forest, xgboost.
+    Requires prior offline training via tradingai-train-models.
+
+    Args:
+        symbol: Ticker symbol, e.g. AAPL.
+        model: Model name (baseline, logistic, random_forest, xgboost).
+        horizon_days: Prediction horizon in trading days.
+    """
+    return technical.predict_technical_direction_tool(
+        symbol=symbol,
+        model=model,
+        horizon_days=horizon_days,
+    )
+
+
 def main() -> None:
     mcp.run()
 
