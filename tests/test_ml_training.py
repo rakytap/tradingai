@@ -3,7 +3,7 @@ import pandas as pd
 
 from tradingai.analysis.ml.artifacts import load_manifest, manifest_path
 from tradingai.analysis.ml.evaluation import evaluate_predictions, rank_models
-from tradingai.analysis.ml.training import _resolve_tickers, train_models
+from tradingai.analysis.ml.training import _resolve_models, _resolve_tickers, train_models
 
 
 def _training_frame(rows: int = 400) -> pd.DataFrame:
@@ -30,6 +30,14 @@ def test_resolve_tickers_uses_string_list_from_database(monkeypatch):
     assert _resolve_tickers(None) == ["AAPL", "MSFT"]
 
 
+def test_resolve_models_defaults_to_all():
+    assert _resolve_models(None) == ["baseline", "logistic", "random_forest", "xgboost"]
+
+
+def test_resolve_models_accepts_comma_separated():
+    assert _resolve_models(["random_forest,logistic"]) == ["random_forest", "logistic"]
+
+
 def test_train_models_writes_manifest_and_artifacts(tmp_path, monkeypatch):
     frame = _training_frame()
 
@@ -45,6 +53,32 @@ def test_train_models_writes_manifest_and_artifacts(tmp_path, monkeypatch):
     assert loaded is not None
     assert "5" in loaded["results"]
     assert (tmp_path / "horizon_5" / "logistic.joblib").exists()
+
+
+def test_train_models_single_model_merges_manifest(tmp_path, monkeypatch):
+    frame = _training_frame()
+
+    monkeypatch.setattr(
+        "tradingai.analysis.ml.training.build_training_dataset",
+        lambda tickers, horizon_days: frame.copy(),
+    )
+    monkeypatch.setattr("tradingai.analysis.ml.training.initialize_schema", lambda: None)
+
+    train_models(tickers=["AAPL"], horizons=(5,), model_dir=tmp_path)
+    manifest = train_models(
+        tickers=["AAPL"],
+        horizons=(5,),
+        models=["logistic"],
+        model_dir=tmp_path,
+    )
+
+    assert set(manifest["results"]["5"]["metrics"]) == {
+        "baseline",
+        "logistic",
+        "random_forest",
+        "xgboost",
+    }
+    assert len(manifest["results"]["5"]["ranked"]) == 4
 
 
 def test_rank_models_orders_by_brier_score():

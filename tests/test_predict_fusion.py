@@ -50,7 +50,7 @@ def test_fuse_agent_signals_combined_score():
 def test_fuse_agent_signals_multi_horizon():
     report = fuse_agent_signals("AAPL", _signals())
     horizons = {item.horizon_days: item for item in report.horizons}
-    assert set(horizons) == {1, 5, 20}
+    assert set(horizons) == {3, 5, 8}
     assert 0.0 <= horizons[5].probability_up <= 1.0
     assert horizons[5].expected_return_pct != 0.0
 

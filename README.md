@@ -114,8 +114,10 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `SEC_IDENTITY` | Required by SEC for EDGAR API access |
 | `TRADINGAI_REGIME_PROVIDERS` | Macro data: `yfinance`, optional `fred` |
 | `FRED_API_KEY` | Optional — enriches yield curve, inflation, credit spreads |
-| `TRADINGAI_PREDICT_WEIGHTS` | Fusion weights: technical, news, regime (default `0.45,0.35,0.20`) |
-| `TRADINGAI_PREDICT_HORIZONS` | Prediction horizons in trading days (default `1,5,20`) |
+| `TRADINGAI_PREDICT_WEIGHTS` | Fusion weights: technical, news, regime (default `0.45,0.35,0.20`; overridden by tuned file when enabled) |
+| `TRADINGAI_PREDICT_HORIZONS` | Prediction horizons in trading days (default `3,5,8`) |
+| `TRADINGAI_FUSION_TUNING_PATH` | Path to offline-tuned fusion weights JSON (default `./data/fusion_weights.json`) |
+| `TRADINGAI_FUSION_TUNING_ENABLED` | Load tuned weights/scales from file when `1` (default); set `0` to use env defaults only |
 | `TRADINGAI_DATABASE_URL` | PostgreSQL connection string |
 | `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
 
@@ -207,7 +209,7 @@ The critical learning table — one row per ticker × timestamp × horizon.
 
 **Populated by:** `generate_prediction` MCP tool (via Cursor or CLI).
 
-**Evaluated by:** `tradingai-predict-eval` after horizons (1, 5, 20 days) elapse.
+**Evaluated by:** `tradingai-predict-eval` after horizons (3, 5, 8 days) elapse.
 
 ---
 
@@ -271,6 +273,7 @@ Train supervised direction models from indicator features on PostgreSQL price hi
 ```bash
 tradingai-sync-prices          # ensure daily_prices is populated (~2y recommended)
 tradingai-train-models         # trains baseline, logistic, random_forest, xgboost per horizon
+tradingai-train-models --model random_forest --horizon 5   # retrain one model/horizon
 ```
 
 Compare models via MCP:
@@ -338,25 +341,34 @@ Use tradingai-predict to generate a multi-horizon prediction for NVDA.
 2. Normalizes them to a common score scale
 3. Applies weighted fusion + sigmoid (weights from `TRADINGAI_PREDICT_WEIGHTS`)
 4. Tags the prediction (e.g. `product_catalyst_rally`, `earnings_driven_rally`)
-5. Saves **3 rows** to `predictions` (one per horizon: 1, 5, 20 days)
+5. Saves **3 rows** to `predictions` (one per horizon: 3, 5, 8 days)
 
 **Example output:**
 
 | Horizon | Probability up | Expected return |
 |---------|---------------|-----------------|
-| 1 day | 65% | +0.16% |
+| 3 days | 66% | +0.48% |
 | 5 days | 68% | +1.25% |
-| 20 days | 64% | +2.54% |
+| 8 days | 65% | +1.85% |
 
 **Where data is stored:** `predictions` table in PostgreSQL.
 
 **Important:** Probabilities are computed by a deterministic function, not invented by the LLM. The LLM should summarize; the numbers come from the fusion engine.
 
+**Paper portfolio:** Build a starter basket from the latest ranked 5d predictions:
+
+```bash
+tradingai-paper-portfolio              # writes data/paper_portfolio.json + .csv
+tradingai-paper-portfolio --notional 50000 --min-probability 0.55
+```
+
+Or via MCP: `get_paper_portfolio` on `tradingai-predict`.
+
 ---
 
 ## Step 9 — Evaluate predictions (learning loop)
 
-**Purpose:** After 1, 5, and 20 trading days, compare forecasts to actual price moves and compute accuracy metrics. This is how the system "learns" — by querying stored history, not by LLM memory.
+**Purpose:** After 3, 5, and 8 trading days, compare forecasts to actual price moves and compute accuracy metrics. This is how the system "learns" — by querying stored history, not by LLM memory.
 
 ```bash
 tradingai-predict-eval    # or: uv run tradingai-predict-eval
@@ -376,6 +388,30 @@ tradingai-predict-eval    # or: uv run tradingai-predict-eval
 ```
 
 **Where data is stored:** Updates `predictions.actual_return_pct`, `direction_correct`, `evaluated_at` in PostgreSQL.
+
+---
+
+## Step 9b — Tune fusion weights (offline optimizer)
+
+**Purpose:** After enough evaluated predictions exist, search for better fusion agent weights and per-horizon probability scales on a chronological holdout. The result is saved to `data/fusion_weights.json` and auto-loaded at inference time.
+
+```bash
+tradingai-predict-eval          # need evaluated outcomes first
+tradingai-tune-fusion           # writes data/fusion_weights.json
+tradingai-tune-fusion --dry-run # preview without writing
+```
+
+**What this does:**
+
+1. Loads evaluated rows from PostgreSQL (`technical_score`, `news_score`, `regime_score`, `actual_return_pct`)
+2. Splits chronologically (default 70% train / 30% validation)
+3. Grid-searches agent weights and per-horizon sigmoid scales to minimize validation Brier score
+4. Writes `data/fusion_weights.json` (unless `--dry-run`)
+5. Fusion at prediction time reads the file when `TRADINGAI_FUSION_TUNING_ENABLED=1`
+
+**Requirements:** At least `--min-samples` evaluated rows per horizon (default 30). Restart MCP/workers after tuning so config caches reload, or run tune in a fresh process.
+
+**Disable auto-load:** Set `TRADINGAI_FUSION_TUNING_ENABLED=0` to revert to `TRADINGAI_PREDICT_WEIGHTS` and built-in horizon scales.
 
 ---
 
@@ -428,6 +464,7 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | Daily (before analysis) | `tradingai-sync-prices` | Fresh price data for evaluation |
 | On demand | Ask Cursor to analyze tickers or generate predictions | Research |
 | Daily (after close) | `tradingai-predict-eval` | Backfill outcomes, update metrics |
+| Weekly (after eval history builds) | `tradingai-tune-fusion` | Retune fusion weights/scales from evaluated predictions |
 | Weekly | `tradingai-sync-stocks`, `tradingai-sync-news` | Refresh metadata and news |
 
 ---
@@ -470,7 +507,7 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | Tool | Description |
 |------|-------------|
 | `get_agent_signals` | Normalized technical, news, and regime signals for a ticker |
-| `generate_prediction` | Primary tool — fuse signals, compute 1/5/20-day probabilities, auto-save to PostgreSQL |
+| `generate_prediction` | Primary tool — fuse signals, compute 3/5/8-day probabilities, auto-save to PostgreSQL |
 | `explain_prediction` | Human-readable evidence summary with deterministic probability numbers |
 | `evaluate_predictions` | Backfill actual returns for mature predictions |
 | `get_evaluation_metrics` | Accuracy, precision/recall, MAE, Brier score, top-10 ranked return |

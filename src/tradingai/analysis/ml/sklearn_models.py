@@ -37,6 +37,7 @@ class RandomForestPredictor:
             max_depth=8,
             random_state=42,
             n_jobs=-1,
+            class_weight='balanced',
         )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:

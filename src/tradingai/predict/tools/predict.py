@@ -17,6 +17,7 @@ from tradingai.predict.storage.repository import (
     get_track_record,
     save_prediction,
 )
+from tradingai.predict.portfolio import build_paper_portfolio
 
 
 def get_agent_signals_tool(ticker: str) -> dict:
@@ -92,6 +93,23 @@ def get_prediction_history_tool(
         "count": len(history),
         "items": history,
     }
+
+
+def get_paper_portfolio_tool(
+    *,
+    positions: int = 10,
+    cash_weight: float = 0.10,
+    min_probability_up: float = 0.55,
+    notional_usd: float = 100_000.0,
+    horizon_days: int | None = None,
+) -> dict:
+    return build_paper_portfolio(
+        horizon_days=horizon_days,
+        positions=positions,
+        cash_weight=cash_weight,
+        min_probability_up=min_probability_up,
+        notional_usd=notional_usd,
+    )
 
 
 def get_prediction_track_record_tool(

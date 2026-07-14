@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from tradingai.news.analysis.catalyst_extractor import CATALYST_PATTERNS, RISK_PATTERNS
+from tradingai.predict.config import get_ml_horizon_days
 from tradingai.predict.models import AgentSignal, PredictionMetadata, PredictionReport
 
 
@@ -73,6 +74,14 @@ def classify_prediction_type(
     return "general_directional"
 
 
+def _primary_horizon_prob(report: PredictionReport) -> float:
+    target = get_ml_horizon_days()
+    for horizon in report.horizons:
+        if horizon.horizon_days == target:
+            return horizon.probability_up
+    return report.horizons[0].probability_up if report.horizons else 0.5
+
+
 def build_prediction_metadata(
     report: PredictionReport,
     *,
@@ -92,7 +101,7 @@ def build_prediction_metadata(
     if regime_signal:
         regime = regime_signal.raw.get("regime")
 
-    primary_prob = report.horizons[0].probability_up if report.horizons else 0.5
+    primary_prob = _primary_horizon_prob(report)
     metadata = PredictionMetadata(
         sector=sector,
         regime=regime,

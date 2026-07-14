@@ -112,7 +112,7 @@ def compare_technical_models(horizon_days: int | None = None) -> dict:
     is omitted, metrics for all trained horizons are returned.
 
     Args:
-        horizon_days: Optional prediction horizon in trading days (e.g. 1, 5, 20).
+        horizon_days: Optional prediction horizon in trading days (e.g. 3, 5, 8).
     """
     return technical.compare_technical_models_tool(horizon_days=horizon_days)
 

@@ -30,10 +30,27 @@ def _resolve_tickers(tickers: list[str] | None) -> list[str]:
     return list(get_sync_tickers())
 
 
+def _resolve_models(models: list[str] | None) -> list[str]:
+    if not models:
+        return list_predictors()
+
+    resolved: list[str] = []
+    for entry in models:
+        for part in entry.split(","):
+            normalized = part.strip().lower()
+            if not normalized:
+                continue
+            get_predictor(normalized)
+            if normalized not in resolved:
+                resolved.append(normalized)
+    return resolved
+
+
 def train_models(
     *,
     tickers: list[str] | None = None,
     horizons: tuple[int, ...] | None = None,
+    models: list[str] | None = None,
     train_fraction: float = TRAIN_FRACTION,
     dry_run: bool = False,
     model_dir=None,
@@ -41,7 +58,12 @@ def train_models(
     initialize_schema()
     tickers = _resolve_tickers(tickers)
     horizons = horizons or get_prediction_horizons()
+    model_names = _resolve_models(models)
     base_dir = model_dir or get_model_dir()
+
+    from tradingai.analysis.ml.artifacts import load_manifest
+
+    existing_manifest = load_manifest(model_dir=base_dir) or {}
 
     manifest = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -50,7 +72,7 @@ def train_models(
         "models": list_predictors(),
         "feature_columns": get_feature_columns(),
         "include_regime": get_ml_include_regime(),
-        "results": {},
+        "results": dict(existing_manifest.get("results", {})),
     }
 
     for horizon_days in horizons:
@@ -65,8 +87,13 @@ def train_models(
         X_train, y_train = split_features_labels(train_df)
         X_test, y_test = split_features_labels(test_df)
 
-        horizon_metrics: dict[str, dict] = {}
-        for model_name in list_predictors():
+        prior_metrics = dict(
+            manifest.get("results", {}).get(str(horizon_days), {}).get("metrics", {})
+        )
+        horizon_metrics = {
+            name: metrics for name, metrics in prior_metrics.items() if name not in model_names
+        }
+        for model_name in model_names:
             predictor = get_predictor(model_name)
             predictor.fit(X_train.to_numpy(), y_train.to_numpy())
 
@@ -151,11 +178,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train technical analysis ML models.")
     parser.add_argument("--tickers", nargs="*", help="Tickers to include in training.")
     parser.add_argument("--horizon", type=int, help="Train only this horizon in trading days.")
+    parser.add_argument(
+        "--model",
+        action="append",
+        help="Train only this model (repeatable, or comma-separated). "
+        "Choices: baseline, logistic, random_forest, xgboost.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Train/evaluate without saving artifacts.")
     args = parser.parse_args()
 
     horizons = (args.horizon,) if args.horizon else None
-    manifest = train_models(tickers=args.tickers, horizons=horizons, dry_run=args.dry_run)
+    manifest = train_models(
+        tickers=args.tickers,
+        horizons=horizons,
+        models=args.model,
+        dry_run=args.dry_run,
+    )
     _print_manifest_summary(manifest)
     if args.dry_run:
         print("\nDry run complete — no artifacts written.")
