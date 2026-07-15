@@ -3,8 +3,11 @@ from __future__ import annotations
 import math
 import re
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 from tradingai.news.models import AnalystAction, NewsItem, SocialPost
+
+T = TypeVar("T")
 
 BULLISH_TERMS = {
     "beat",
@@ -53,6 +56,21 @@ def score_text(text: str) -> float:
     return max(0.0, min(1.0, 0.5 + (bullish - bearish) / (2 * total)))
 
 
+def is_published_as_of(
+    published_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if published_at is None:
+        return True
+    reference = now or datetime.now(timezone.utc)
+    return published_at.astimezone(timezone.utc) <= reference.astimezone(timezone.utc)
+
+
+def filter_by_published_at(items: list[T], *, now: datetime | None = None) -> list[T]:
+    return [item for item in items if is_published_as_of(item.published_at, now=now)]
+
+
 def _recency_weight(published_at: datetime | None, now: datetime) -> float:
     if published_at is None:
         return 0.6
@@ -73,6 +91,8 @@ def score_news_items(items: list[NewsItem]) -> float | None:
     weighted_scores: list[float] = []
     weights: list[float] = []
     for item in items:
+        if not is_published_as_of(item.published_at, now=now):
+            continue
         text = " ".join(filter(None, [item.title, item.summary]))
         weight = _recency_weight(item.published_at, now)
         weighted_scores.append(score_text(text) * weight)
@@ -85,8 +105,11 @@ def score_news_items(items: list[NewsItem]) -> float | None:
 def score_analyst_actions(actions: list[AnalystAction]) -> float | None:
     if not actions:
         return None
+    now = datetime.now(timezone.utc)
     scores: list[float] = []
     for action in actions:
+        if not is_published_as_of(action.published_at, now=now):
+            continue
         action_text = action.action.lower()
         if "upgrade" in action_text or "outperform" in action_text:
             scores.append(0.8)
@@ -96,6 +119,8 @@ def score_analyst_actions(actions: list[AnalystAction]) -> float | None:
             scores.append(0.65)
         else:
             scores.append(0.5)
+    if not scores:
+        return None
     return sum(scores) / len(scores)
 
 
@@ -106,6 +131,8 @@ def score_social_posts(posts: list[SocialPost]) -> float | None:
     weighted_scores: list[float] = []
     weights: list[float] = []
     for post in posts:
+        if not is_published_as_of(post.published_at, now=now):
+            continue
         text = " ".join(filter(None, [post.title, post.summary]))
         base = score_text(text)
         recency = _recency_weight(post.published_at, now)

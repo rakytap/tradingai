@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from tradingai.news.analysis.catalyst_extractor import extract_catalysts, extract_risk_factors
 from tradingai.news.analysis.sentiment_scorer import (
     aggregate_sentiment,
     compute_confidence,
+    filter_by_published_at,
     score_analyst_actions,
     score_news_items,
     score_social_posts,
@@ -44,9 +47,15 @@ def synthesize_sentiment_report(
     social_posts: list[SocialPost] | None = None,
     sources_used: list[str] | None = None,
 ) -> SentimentReport:
+    now = datetime.now(timezone.utc)
+    news = filter_by_published_at(news, now=now)
+    press_releases = filter_by_published_at(press_releases, now=now)
+    social_posts = filter_by_published_at(social_posts or [], now=now)
+    analyst_actions = filter_by_published_at(analyst_actions, now=now)
+
     earnings_text = earnings.press_release if earnings else None
     transcript_text = earnings.transcript if earnings else None
-    social_news = _social_as_news(social_posts or [])
+    social_news = _social_as_news(social_posts)
 
     catalysts = extract_catalysts(
         news + social_news,
@@ -98,7 +107,7 @@ def synthesize_sentiment_report(
         weighted_scores.append((transcript_score, 1.0))
         raw_scores.append(transcript_score)
 
-    social_score = score_social_posts(social_posts or [])
+    social_score = score_social_posts(social_posts)
     if social_score is not None:
         social_weight = get_social_weight()
         weighted_scores.append((social_score, social_weight))
@@ -111,7 +120,7 @@ def synthesize_sentiment_report(
         + len(press_releases)
         + len(filings)
         + len(analyst_actions)
-        + len(social_posts or []),
+        + len(social_posts),
         sentiment_scores=raw_scores,
     )
 
