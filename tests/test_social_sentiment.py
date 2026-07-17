@@ -49,6 +49,6 @@ def test_score_social_posts_returns_bounded_value():
         _post("NVDA demand remains weak and bearish", score=15.0),
     ]
     kept, _ = filter_social_posts(posts, "NVDA")
-    score = score_social_posts(kept)
+    score, _ = score_social_posts(kept)
     assert score is not None
     assert 0.0 <= score <= 1.0

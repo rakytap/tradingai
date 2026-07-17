@@ -117,7 +117,9 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_PREDICT_WEIGHTS` | Fusion weights: technical, news, regime (default `0.45,0.35,0.20`; overridden by tuned file when enabled) |
 | `TRADINGAI_PREDICT_HORIZONS` | Prediction horizons in trading days (default `3,5,8`) |
 | `TRADINGAI_FUSION_TUNING_PATH` | Path to offline-tuned fusion weights JSON (default `./data/fusion_weights.json`) |
-| `TRADINGAI_FUSION_TUNING_ENABLED` | Load tuned weights/scales from file when `1` (default); set `0` to use env defaults only |
+| `TRADINGAI_FUSION_TUNING_ENABLED` | Load tuned fusion weights/scales from file when `1` (default); set `0` to use env defaults only |
+| `TRADINGAI_NEWS_SCORING_PATH` | Path to offline-tuned news scoring JSON (default `./data/news_scoring.json`) |
+| `TRADINGAI_NEWS_SCORING_ENABLED` | Load tuned news source weights / recency when `1` (default); set `0` for code/env defaults |
 | `TRADINGAI_DATABASE_URL` | PostgreSQL connection string |
 | `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
 
@@ -327,19 +329,38 @@ Use tradingai-regime to detect the current market regime and recommended strateg
 
 ---
 
-## Step 8 — Generate and store predictions
+## Step 8 — Generate and store predictions via MCP
 
 **Purpose:** Combine technical, news, and regime signals into deterministic multi-horizon probabilities and save them for later evaluation.
+
+**Prerequisites:** Step 6 completed with `tradingai-predict` enabled. PostgreSQL running. For ML technical signals, set `TRADINGAI_PREDICT_BACKEND=ml` and train models first (Step 7).
+
+### Generate a prediction
+
+Ask Cursor to call `generate_prediction` on `tradingai-predict`:
 
 ```
 Use tradingai-predict to generate a multi-horizon prediction for NVDA.
 ```
 
-**What happens internally:**
+Other useful prompts:
+
+```
+Use tradingai-predict to explain the prediction for NVDA.
+Use tradingai-predict to get agent signals for AAPL (technical, news, regime only — no save).
+```
+
+| Tool | Persists? | Use when |
+|------|-----------|----------|
+| `generate_prediction` | Yes — writes to `predictions` | You want probabilities stored for evaluation |
+| `explain_prediction` | No | You want a readable summary of the same fusion math |
+| `get_agent_signals` | No | You want raw agent scores before fusion |
+
+**What happens internally (`generate_prediction`):**
 
 1. Fetches live technical, news, and regime signals
 2. Normalizes them to a common score scale
-3. Applies weighted fusion + sigmoid (weights from `TRADINGAI_PREDICT_WEIGHTS`)
+3. Applies weighted fusion + sigmoid (weights from tuned file or `TRADINGAI_PREDICT_WEIGHTS`)
 4. Tags the prediction (e.g. `product_catalyst_rally`, `earnings_driven_rally`)
 5. Saves **3 rows** to `predictions` (one per horizon: 3, 5, 8 days)
 
@@ -355,14 +376,52 @@ Use tradingai-predict to generate a multi-horizon prediction for NVDA.
 
 **Important:** Probabilities are computed by a deterministic function, not invented by the LLM. The LLM should summarize; the numbers come from the fusion engine.
 
-**Paper portfolio:** Build a starter basket from the latest ranked 5d predictions:
+### Query prediction history
+
+Stored forecasts are available through `get_prediction_history` on `tradingai-predict`. Use this to inspect past calls without regenerating signals.
+
+```
+Use tradingai-predict to get prediction history for NVDA.
+Use tradingai-predict to get the latest 10 predictions for AAPL.
+Use tradingai-predict to get prediction history across all tickers (limit 20).
+```
+
+| Argument | Meaning |
+|----------|---------|
+| `ticker` | Optional. Omit to list recent predictions across the universe |
+| `limit` | Max rows to return (default `20`) |
+
+Each history item includes horizon, `probability_up`, `expected_return_pct`, component scores, tags, and — after Step 9 — `actual_return_pct` / `direction_correct` when the outcome has been evaluated.
+
+Typical follow-up after history:
+
+```
+Summarize the last few NVDA predictions from tradingai-predict history and whether any have been evaluated yet.
+```
+
+### Paper portfolio
+
+Build a starter basket from the latest ranked predictions:
 
 ```bash
-tradingai-paper-portfolio              # writes data/paper_portfolio.json + .csv
+tradingai-paper-portfolio              # score-weighted (default)
 tradingai-paper-portfolio --notional 50000 --min-probability 0.55
 ```
 
-Or via MCP: `get_paper_portfolio` on `tradingai-predict`.
+**Markowitz mode** reweights the same filtered basket using prediction `expected_return_pct` as expected returns and Ledoit–Wolf covariance from synced `daily_prices` (long-only, cash sleeve, max weight cap):
+
+```bash
+tradingai-sync-prices                  # required for covariance
+tradingai-paper-portfolio --optimizer markowitz --horizon 5
+tradingai-paper-portfolio --optimizer markowitz --lookback 126 --risk-aversion 3 --max-weight 0.25
+```
+
+Or via MCP:
+
+```
+Use tradingai-predict to get a paper portfolio with 10 positions and 10% cash.
+Use tradingai-predict to get a paper portfolio with optimizer markowitz and horizon 5.
+```
 
 ---
 
@@ -391,27 +450,37 @@ tradingai-predict-eval    # or: uv run tradingai-predict-eval
 
 ---
 
-## Step 9b — Tune fusion weights (offline optimizer)
+## Step 9b — Tune news scoring and fusion weights (offline optimizer)
 
-**Purpose:** After enough evaluated predictions exist, search for better fusion agent weights and per-horizon probability scales on a chronological holdout. The result is saved to `data/fusion_weights.json` and auto-loaded at inference time.
+**Purpose:** Nested offline tuning. First search news source weights and recency half-life (holding current fusion weights fixed), then resimulate `news_score` and tune fusion agent weights / horizon scales. Results are auto-loaded at inference time.
 
 ```bash
-tradingai-predict-eval          # need evaluated outcomes first
-tradingai-tune-fusion           # writes data/fusion_weights.json
-tradingai-tune-fusion --dry-run # preview without writing
+tradingai-predict-eval                    # need evaluated outcomes first
+tradingai-tune-fusion                     # news → data/news_scoring.json, then fusion → data/fusion_weights.json
+tradingai-tune-fusion --dry-run           # preview without writing
+tradingai-tune-fusion --skip-news         # fusion-only (prior behavior)
+tradingai-tune-fusion --news-only         # write news scoring only
 ```
 
 **What this does:**
 
-1. Loads evaluated rows from PostgreSQL (`technical_score`, `news_score`, `regime_score`, `actual_return_pct`)
-2. Splits chronologically (default 70% train / 30% validation)
-3. Grid-searches agent weights and per-horizon sigmoid scales to minimize validation Brier score
-4. Writes `data/fusion_weights.json` (unless `--dry-run`)
-5. Fusion at prediction time reads the file when `TRADINGAI_FUSION_TUNING_ENABLED=1`
+1. **News phase:** loads evaluated rows that include `scoring_snapshot` in `agent_payload.news`, grids source blend weights + exponential recency half-life, minimizes validation Brier with fusion weights held fixed
+2. Writes `data/news_scoring.json` (unless `--dry-run` / `--skip-news`)
+3. **Fusion phase:** re-simulates `news_score` from snapshots under tuned news params, then grid-searches fusion weights and per-horizon sigmoid scales
+4. Writes `data/fusion_weights.json` (unless `--dry-run` / `--news-only`)
+5. At prediction time, news scoring and fusion each read their JSON when enabled
 
-**Requirements:** At least `--min-samples` evaluated rows per horizon (default 30). Restart MCP/workers after tuning so config caches reload, or run tune in a fresh process.
+**Requirements:**
 
-**Disable auto-load:** Set `TRADINGAI_FUSION_TUNING_ENABLED=0` to revert to `TRADINGAI_PREDICT_WEIGHTS` and built-in horizon scales.
+- Fusion phase: at least `--min-samples` evaluated rows **per horizon** (default 30)
+- News phase: at least `--min-samples` evaluated rows **with** `scoring_snapshot` (new predictions after this feature). Older rows without snapshots are skipped for news tuning — use `--skip-news` until enough new rows exist
+
+**Disable auto-load:**
+
+- `TRADINGAI_FUSION_TUNING_ENABLED=0` — fusion env/code defaults
+- `TRADINGAI_NEWS_SCORING_ENABLED=0` — news env/code defaults (`TRADINGAI_SOCIAL_WEIGHT`, built-in source weights / half-life)
+
+Restart MCP/workers after tuning so config caches reload.
 
 ---
 
@@ -511,7 +580,8 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | `explain_prediction` | Human-readable evidence summary with deterministic probability numbers |
 | `evaluate_predictions` | Backfill actual returns for mature predictions |
 | `get_evaluation_metrics` | Accuracy, precision/recall, MAE, Brier score, top-10 ranked return |
-| `get_prediction_history` | Query stored predictions for a ticker or date range |
+| `get_prediction_history` | Query stored predictions for a ticker (or all tickers) with optional `limit` |
+| `get_paper_portfolio` | Diversified paper basket; `optimizer=score` (default) or `markowitz` (cov from `daily_prices`) |
 | `get_prediction_track_record` | Segment hit rate, average return, and overconfidence |
 | `get_segment_calibration` | Accuracy and Brier score by sector and prediction type |
 

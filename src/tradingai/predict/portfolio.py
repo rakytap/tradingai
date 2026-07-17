@@ -6,14 +6,24 @@ from datetime import datetime, timezone
 from tradingai.data.connection import get_connection
 from tradingai.data.etf_symbols import is_etf
 from tradingai.predict.config import get_ml_horizon_days
+from tradingai.predict.portfolio_risk import (
+    DEFAULT_LOOKBACK_DAYS,
+    DEFAULT_MAX_WEIGHT,
+    DEFAULT_RISK_AVERSION,
+    annualized_volatility_pct,
+    build_returns_frame,
+    estimate_mu_sigma,
+    optimize_markowitz_weights,
+)
 
 BROAD_MARKET_ETFS = frozenset({"SPY", "VOO", "IVV", "VTI", "QQQ", "DIA", "IWM", "RSP"})
 DEFAULT_POSITIONS = 10
 DEFAULT_CASH_WEIGHT = 0.10
 DEFAULT_MIN_COMBINED_SCORE = 0.0
 DEFAULT_MIN_PROBABILITY_UP = 0.55
-DEFAULT_MAX_PER_SECTOR = 2
+DEFAULT_MAX_PER_SECTOR = 10
 DEFAULT_MAX_BROAD_ETF = 1
+DEFAULT_OPTIMIZER = "score"
 
 
 def _latest_predictions_per_ticker(
@@ -112,37 +122,95 @@ def select_portfolio_positions(
     return selected
 
 
+def _holding_base(row: dict, *, weight: float, optimizer: str) -> dict:
+    return {
+        "ticker": str(row["ticker"]).upper(),
+        "weight": round(weight, 4),
+        "weight_pct": round(weight * 100, 2),
+        "combined_score": round(float(row["combined_score"]), 4),
+        "probability_up": round(float(row["probability_up"]), 4),
+        "expected_return_pct": round(float(row["expected_return_pct"]), 4),
+        "confidence": round(float(row["confidence"]), 4),
+        "sector": row.get("sector"),
+        "regime": row.get("regime"),
+        "prediction_type": row.get("prediction_type"),
+        "technical_score": round(float(row["technical_score"]), 4),
+        "news_score": round(float(row["news_score"]), 4),
+        "regime_score": round(float(row["regime_score"]), 4),
+        "model_name": row.get("model_name"),
+        "prediction_id": row.get("id"),
+        "as_of": row.get("timestamp").isoformat() if row.get("timestamp") else None,
+        "is_etf": is_etf(str(row["ticker"])),
+        "optimizer": optimizer,
+    }
+
+
 def _score_weights(rows: list[dict], *, invested_fraction: float) -> list[dict]:
     if not rows:
         return []
 
     scores = [max(float(row["combined_score"]), 0.01) for row in rows]
     total = sum(scores)
-    positions = []
-    for row, score in zip(rows, scores):
-        weight = invested_fraction * (score / total)
-        positions.append(
-            {
-                "ticker": str(row["ticker"]).upper(),
-                "weight": round(weight, 4),
-                "weight_pct": round(weight * 100, 2),
-                "combined_score": round(float(row["combined_score"]), 4),
-                "probability_up": round(float(row["probability_up"]), 4),
-                "expected_return_pct": round(float(row["expected_return_pct"]), 4),
-                "confidence": round(float(row["confidence"]), 4),
-                "sector": row.get("sector"),
-                "regime": row.get("regime"),
-                "prediction_type": row.get("prediction_type"),
-                "technical_score": round(float(row["technical_score"]), 4),
-                "news_score": round(float(row["news_score"]), 4),
-                "regime_score": round(float(row["regime_score"]), 4),
-                "model_name": row.get("model_name"),
-                "prediction_id": row.get("id"),
-                "as_of": row.get("timestamp").isoformat() if row.get("timestamp") else None,
-                "is_etf": is_etf(str(row["ticker"])),
-            }
+    return [
+        _holding_base(row, weight=invested_fraction * (score / total), optimizer="score")
+        for row, score in zip(rows, scores)
+    ]
+
+
+def _markowitz_weights(
+    rows: list[dict],
+    *,
+    horizon_days: int,
+    invested_fraction: float,
+    lookback_days: int,
+    risk_aversion: float,
+    max_weight: float,
+    database_url: str | None = None,
+) -> tuple[list[dict], str]:
+    tickers = [str(row["ticker"]).upper() for row in rows]
+    returns = build_returns_frame(
+        tickers,
+        lookback_days=lookback_days,
+        database_url=database_url,
+    )
+    by_ticker = {str(row["ticker"]).upper(): row for row in rows}
+    ordered_tickers = [ticker for ticker in returns.columns if ticker in by_ticker]
+    if len(ordered_tickers) < 2:
+        raise ValueError(
+            "Markowitz needs at least 2 tickers with overlapping price history. "
+            "Run tradingai-sync-prices."
         )
-    return positions
+    ordered_rows = [by_ticker[ticker] for ticker in ordered_tickers]
+    returns = returns[ordered_tickers]
+    mu, sigma, _ = estimate_mu_sigma(
+        returns,
+        ordered_rows,
+        horizon_days=horizon_days,
+    )
+
+    try:
+        weights = optimize_markowitz_weights(
+            mu,
+            sigma,
+            invested_fraction=invested_fraction,
+            risk_aversion=risk_aversion,
+            max_weight=max_weight,
+        )
+        status = "ok"
+    except (RuntimeError, ValueError):
+        fallback = _score_weights(ordered_rows, invested_fraction=invested_fraction)
+        return fallback, "fallback_score"
+
+    holdings = []
+    for index, (row, weight) in enumerate(zip(ordered_rows, weights)):
+        holding = _holding_base(row, weight=float(weight), optimizer="markowitz")
+        holding["mu_daily"] = round(float(mu[index]), 6)
+        holding["annualized_volatility_pct"] = round(
+            annualized_volatility_pct(sigma, index),
+            4,
+        )
+        holdings.append(holding)
+    return holdings, status
 
 
 def build_paper_portfolio(
@@ -153,9 +221,17 @@ def build_paper_portfolio(
     min_combined_score: float = DEFAULT_MIN_COMBINED_SCORE,
     min_probability_up: float = DEFAULT_MIN_PROBABILITY_UP,
     notional_usd: float | None = 100_000.0,
+    optimizer: str = DEFAULT_OPTIMIZER,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    max_weight: float = DEFAULT_MAX_WEIGHT,
     database_url: str | None = None,
 ) -> dict:
     horizon = horizon_days if horizon_days is not None else get_ml_horizon_days()
+    selected_optimizer = (optimizer or DEFAULT_OPTIMIZER).lower().strip()
+    if selected_optimizer not in {"score", "markowitz"}:
+        raise ValueError("optimizer must be 'score' or 'markowitz'.")
+
     candidates = _latest_predictions_per_ticker(
         horizon_days=horizon,
         database_url=database_url,
@@ -165,13 +241,14 @@ def build_paper_portfolio(
             f"No stored predictions for horizon {horizon}d. "
             "Run tradingai-predict-batch first."
         )
-
+    print("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk ", positions)
     selected = select_portfolio_positions(
         candidates,
         size=positions,
         min_combined_score=min_combined_score,
         min_probability_up=min_probability_up,
     )
+    print("selected ", len(selected))
     if not selected:
         raise ValueError(
             "No candidates passed portfolio filters. "
@@ -179,7 +256,19 @@ def build_paper_portfolio(
         )
 
     invested_fraction = max(0.0, min(1.0, 1.0 - cash_weight))
-    holdings = _score_weights(selected, invested_fraction=invested_fraction)
+    optimizer_status = "ok"
+    if selected_optimizer == "markowitz":
+        holdings, optimizer_status = _markowitz_weights(
+            selected,
+            horizon_days=horizon,
+            invested_fraction=invested_fraction,
+            lookback_days=lookback_days,
+            risk_aversion=risk_aversion,
+            max_weight=max_weight,
+            database_url=database_url,
+        )
+    else:
+        holdings = _score_weights(selected, invested_fraction=invested_fraction)
 
     if notional_usd is not None:
         for holding in holdings:
@@ -194,6 +283,11 @@ def build_paper_portfolio(
         "horizon_days": horizon,
         "regime": regime,
         "universe_size": len(candidates),
+        "optimizer": selected_optimizer,
+        "optimizer_status": optimizer_status,
+        "lookback_days": lookback_days if selected_optimizer == "markowitz" else None,
+        "risk_aversion": risk_aversion if selected_optimizer == "markowitz" else None,
+        "max_weight": max_weight if selected_optimizer == "markowitz" else None,
         "filters": {
             "min_combined_score": min_combined_score,
             "min_probability_up": min_probability_up,

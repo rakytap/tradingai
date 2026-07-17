@@ -59,10 +59,11 @@ class SentimentReport(BaseModel):
     risk_factors: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
     sources_used: list[str] = Field(default_factory=list)
+    scoring_snapshot: dict | None = None
     as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_public_dict(self) -> dict:
-        return {
+        payload = {
             "ticker": self.ticker,
             "sentiment": round(self.sentiment, 2),
             "catalysts": self.catalysts,
@@ -71,3 +72,6 @@ class SentimentReport(BaseModel):
             "sources_used": self.sources_used,
             "as_of": self.as_of.isoformat(),
         }
+        if self.scoring_snapshot is not None:
+            payload["scoring_snapshot"] = self.scoring_snapshot
+        return payload

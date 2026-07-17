@@ -7,12 +7,14 @@ from tradingai.news.analysis.sentiment_scorer import (
     aggregate_sentiment,
     compute_confidence,
     filter_by_published_at,
+    recency_weight,
     score_analyst_actions,
     score_news_items,
     score_social_posts,
     score_text,
+    snapshot_item,
 )
-from tradingai.news.config import get_social_weight
+from tradingai.news.config import get_news_scoring_params
 from tradingai.news.models import (
     AnalystAction,
     EarningsMaterial,
@@ -48,6 +50,9 @@ def synthesize_sentiment_report(
     sources_used: list[str] | None = None,
 ) -> SentimentReport:
     now = datetime.now(timezone.utc)
+    scoring = get_news_scoring_params()
+    source_weights = scoring["source_weights"]
+
     news = filter_by_published_at(news, now=now)
     press_releases = filter_by_published_at(press_releases, now=now)
     social_posts = filter_by_published_at(social_posts or [], now=now)
@@ -75,42 +80,67 @@ def synthesize_sentiment_report(
 
     weighted_scores: list[tuple[float, float]] = []
     raw_scores: list[float] = []
+    snapshot_items: list[dict] = []
 
-    news_score = score_news_items(news)
+    news_score, news_items = score_news_items(news, channel="news", now=now, params=scoring)
+    snapshot_items.extend(news_items)
     if news_score is not None:
-        weighted_scores.append((news_score, 1.0))
+        weighted_scores.append((news_score, float(source_weights["news"])))
         raw_scores.append(news_score)
 
-    press_score = score_news_items(press_releases)
+    press_score, press_items = score_news_items(
+        press_releases, channel="press", now=now, params=scoring
+    )
+    snapshot_items.extend(press_items)
     if press_score is not None:
-        weighted_scores.append((press_score, 1.1))
+        weighted_scores.append((press_score, float(source_weights["press"])))
         raw_scores.append(press_score)
 
-    analyst_score = score_analyst_actions(analyst_actions)
+    analyst_score, analyst_items = score_analyst_actions(
+        analyst_actions, now=now, params=scoring
+    )
+    snapshot_items.extend(analyst_items)
     if analyst_score is not None:
-        weighted_scores.append((analyst_score, 1.4))
+        weighted_scores.append((analyst_score, float(source_weights["analyst"])))
         raw_scores.append(analyst_score)
 
+    filing_snapshot: list[dict] = []
+    filing_weighted: list[float] = []
+    filing_weights: list[float] = []
     for filing in filings:
-        if filing.excerpt:
-            filing_score = score_text(filing.excerpt)
-            weighted_scores.append((filing_score, 0.9))
-            raw_scores.append(filing_score)
+        if not filing.excerpt:
+            continue
+        filing_score = score_text(filing.excerpt)
+        published = filing.filed_at
+        filing_snapshot.append(snapshot_item("filings", filing_score, published))
+        weight = recency_weight(published, now, params=scoring)
+        filing_weighted.append(filing_score * weight)
+        filing_weights.append(weight)
+    snapshot_items.extend(filing_snapshot)
+    if filing_weights:
+        channel_score = sum(filing_weighted) / sum(filing_weights)
+        weighted_scores.append((channel_score, float(source_weights["filings"])))
+        raw_scores.append(channel_score)
 
     if earnings_text:
         earnings_score = score_text(earnings_text)
-        weighted_scores.append((earnings_score, 1.3))
+        published = earnings.filed_at if earnings else None
+        snapshot_items.append(snapshot_item("earnings", earnings_score, published))
+        # Single-item channel: recency applied in rescore; live uses same via weight 1.0 item.
+        weighted_scores.append((earnings_score, float(source_weights["earnings"])))
         raw_scores.append(earnings_score)
 
     if transcript_text:
         transcript_score = score_text(transcript_text)
-        weighted_scores.append((transcript_score, 1.0))
+        published = earnings.filed_at if earnings else None
+        snapshot_items.append(snapshot_item("transcript", transcript_score, published))
+        weighted_scores.append((transcript_score, float(source_weights["transcript"])))
         raw_scores.append(transcript_score)
 
-    social_score = score_social_posts(social_posts)
+    social_score, social_items = score_social_posts(social_posts, now=now, params=scoring)
+    snapshot_items.extend(social_items)
     if social_score is not None:
-        social_weight = get_social_weight()
-        weighted_scores.append((social_score, social_weight))
+        weighted_scores.append((social_score, float(source_weights["social"])))
         raw_scores.append(social_score)
 
     sentiment = aggregate_sentiment(weighted_scores)
@@ -131,4 +161,5 @@ def synthesize_sentiment_report(
         risk_factors=risk_factors,
         confidence=confidence,
         sources_used=sources_used or [],
+        scoring_snapshot={"items": snapshot_items},
     )

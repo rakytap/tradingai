@@ -102,6 +102,10 @@ def get_paper_portfolio_tool(
     min_probability_up: float = 0.55,
     notional_usd: float = 100_000.0,
     horizon_days: int | None = None,
+    optimizer: str = "score",
+    lookback_days: int = 126,
+    risk_aversion: float = 3.0,
+    max_weight: float = 0.25,
 ) -> dict:
     return build_paper_portfolio(
         horizon_days=horizon_days,
@@ -109,6 +113,10 @@ def get_paper_portfolio_tool(
         cash_weight=cash_weight,
         min_probability_up=min_probability_up,
         notional_usd=notional_usd,
+        optimizer=optimizer,
+        lookback_days=lookback_days,
+        risk_aversion=risk_aversion,
+        max_weight=max_weight,
     )
 
 

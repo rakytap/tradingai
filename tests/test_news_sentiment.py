@@ -131,7 +131,7 @@ def test_score_news_items_excludes_future_published_at():
         provider="yfinance",
         published_at=FIXED_NOW + timedelta(days=1),
     )
-    score = score_news_items([past, future])
+    score, _ = score_news_items([past, future], now=FIXED_NOW)
     assert score is not None
     assert score < 0.5
 

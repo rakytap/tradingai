@@ -60,14 +60,27 @@ def get_paper_portfolio(
     min_probability_up: float = 0.55,
     notional_usd: float = 100_000.0,
     horizon_days: int | None = None,
+    optimizer: str = "score",
+    lookback_days: int = 126,
+    risk_aversion: float = 3.0,
+    max_weight: float = 0.25,
 ) -> dict:
-    """Build a diversified paper-trading portfolio from latest ranked predictions."""
+    """Build a diversified paper-trading portfolio from latest ranked predictions.
+
+    optimizer='score' weights by combined_score (default).
+    optimizer='markowitz' uses prediction expected returns plus covariance from
+    synced daily_prices (requires tradingai-sync-prices).
+    """
     return predict.get_paper_portfolio_tool(
         positions=positions,
         cash_weight=cash_weight,
         min_probability_up=min_probability_up,
         notional_usd=notional_usd,
         horizon_days=horizon_days,
+        optimizer=optimizer,
+        lookback_days=lookback_days,
+        risk_aversion=risk_aversion,
+        max_weight=max_weight,
     )
 
 

@@ -94,7 +94,7 @@ def _collect_social_posts(
 def fetch_social_sentiment(ticker: str, count: int = 15) -> dict:
     """Fetch filtered Reddit/X posts and a social-only sentiment score."""
     posts, sources, _, noise_removed = _collect_social_posts(ticker, count=count)
-    social_score = score_social_posts(posts)
+    social_score, _ = score_social_posts(posts)
     return {
         "ticker": ticker.upper(),
         "count": len(posts),
@@ -252,7 +252,7 @@ def analyze_news_sentiment(
         sources_used=sources_with_data,
     )
 
-    social_score = score_social_posts(social_posts)
+    social_score, _ = score_social_posts(social_posts)
 
     return {
         **report.to_public_dict(),
