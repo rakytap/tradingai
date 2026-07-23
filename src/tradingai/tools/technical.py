@@ -6,6 +6,9 @@ from tradingai.analysis.indicators import (
     compute_indicators,
     latest_indicator_values,
 )
+from tradingai.analysis.ml.inference import predict_direction
+from tradingai.analysis.ml.registry import list_predictors
+from tradingai.analysis.ml.training import compare_models_from_manifest
 from tradingai.analysis.signals import analyze_technical_setup
 from tradingai.providers.registry import get_provider
 
@@ -151,3 +154,22 @@ def compare_technical_signals(
         "benchmark": benchmark_symbol,
         "comparisons": comparisons,
     }
+
+
+def compare_technical_models_tool(horizon_days: int | None = None) -> dict:
+    """Compare trained ML model metrics from the latest training manifest."""
+    if horizon_days is None:
+        return compare_models_from_manifest()
+    return compare_models_from_manifest(horizon_days=horizon_days)
+
+
+def predict_technical_direction_tool(
+    symbol: str,
+    model: str = "logistic",
+    horizon_days: int = 5,
+) -> dict:
+    """Predict directional probability from a trained technical ML model."""
+    if model.lower().strip() not in list_predictors():
+        supported = ", ".join(list_predictors())
+        raise ValueError(f"Unknown model '{model}'. Supported: {supported}.")
+    return predict_direction(symbol, model_name=model, horizon_days=horizon_days)

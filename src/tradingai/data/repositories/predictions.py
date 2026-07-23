@@ -21,13 +21,15 @@ def save_prediction_rows(
                     probability_up, expected_return_pct, confidence, combined_score,
                     sector, regime, technical_score, news_score, regime_score,
                     catalyst_tags, reason_tags, prediction_type,
-                    agent_payload, reasons
+                    agent_payload, reasons,
+                    model_name, model_version
                 ) VALUES (
                     %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s,
-                    %s::jsonb, %s::jsonb
+                    %s::jsonb, %s::jsonb,
+                    %s, %s
                 )
                 ON CONFLICT (ticker, timestamp, horizon_days) DO UPDATE SET
                     probability_up = EXCLUDED.probability_up,
@@ -43,7 +45,9 @@ def save_prediction_rows(
                     reason_tags = EXCLUDED.reason_tags,
                     prediction_type = EXCLUDED.prediction_type,
                     agent_payload = EXCLUDED.agent_payload,
-                    reasons = EXCLUDED.reasons
+                    reasons = EXCLUDED.reasons,
+                    model_name = EXCLUDED.model_name,
+                    model_version = EXCLUDED.model_version
                 RETURNING id
                 """,
                 (
@@ -64,6 +68,8 @@ def save_prediction_rows(
                     row.get("prediction_type"),
                     json.dumps(row.get("agent_payload", {})),
                     json.dumps(row.get("reasons", [])),
+                    row.get("model_name"),
+                    row.get("model_version"),
                 ),
             ).fetchone()
             ids.append(int(result[0]))
@@ -115,10 +121,13 @@ def get_pending_predictions(
 def update_prediction_outcome(
     prediction_id: int,
     actual_return_pct: float,
+    probability_up: float,
     *,
     database_url: str | None = None,
 ) -> None:
-    direction_correct = actual_return_pct > 0
+    from tradingai.analysis.ml.direction import direction_is_correct
+
+    direction_correct = direction_is_correct(probability_up, actual_return_pct)
     evaluated_at = datetime.now(timezone.utc)
     with get_connection(database_url) as conn:
         conn.execute(

@@ -3,15 +3,26 @@ from __future__ import annotations
 import statistics
 from collections import defaultdict
 
+from tradingai.analysis.ml.config import get_direction_threshold
+from tradingai.analysis.ml.direction import (
+    actual_direction_up,
+    direction_is_correct,
+    predicted_direction_up,
+)
 from tradingai.predict.config import get_prediction_horizons
 from tradingai.predict.storage.repository import get_evaluated_rows, get_segment_calibration
 
 
-def _precision_recall(rows: list[dict]) -> dict[str, float | None]:
+def _precision_recall(
+    rows: list[dict],
+    *,
+    threshold: float | None = None,
+) -> dict[str, float | None]:
+    cutoff = get_direction_threshold() if threshold is None else threshold
     tp = fp = fn = 0
     for row in rows:
-        predicted_up = float(row["probability_up"]) >= 0.5
-        actual_up = float(row["actual_return_pct"]) > 0
+        predicted_up = predicted_direction_up(float(row["probability_up"]), threshold=cutoff)
+        actual_up = actual_direction_up(float(row["actual_return_pct"]))
         if predicted_up and actual_up:
             tp += 1
         elif predicted_up and not actual_up:
@@ -24,10 +35,26 @@ def _precision_recall(rows: list[dict]) -> dict[str, float | None]:
     return {"precision": precision, "recall": recall}
 
 
+def _direction_accuracy(rows: list[dict], *, threshold: float | None = None) -> float | None:
+    if not rows:
+        return None
+    cutoff = get_direction_threshold() if threshold is None else threshold
+    correct = sum(
+        1
+        for row in rows
+        if direction_is_correct(
+            float(row["probability_up"]),
+            float(row["actual_return_pct"]),
+            threshold=cutoff,
+        )
+    )
+    return correct / len(rows)
+
+
 def _brier_score(rows: list[dict]) -> float | None:
     values: list[float] = []
     for row in rows:
-        actual_up = 1.0 if float(row["actual_return_pct"]) > 0 else 0.0
+        actual_up = 1.0 if actual_direction_up(float(row["actual_return_pct"])) else 0.0
         values.append((float(row["probability_up"]) - actual_up) ** 2)
     return statistics.mean(values) if values else None
 
@@ -61,6 +88,7 @@ def _top_ranked_return(rows: list[dict], top_n: int = 10) -> float | None:
 
 def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
     horizons = [horizon_days] if horizon_days is not None else list(get_prediction_horizons())
+    threshold = get_direction_threshold()
     summary: dict[str, dict] = {}
 
     for horizon in horizons:
@@ -74,16 +102,17 @@ def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
                 "mae_expected_return_pct": None,
                 "brier_score": None,
                 "top_10_ranked_return_pct": None,
+                "direction_threshold": round(threshold, 4),
             }
             continue
 
-        direction_accuracy = statistics.mean(
-            1.0 if row["direction_correct"] else 0.0 for row in rows
-        )
-        precision_recall = _precision_recall(rows)
+        direction_accuracy = _direction_accuracy(rows, threshold=threshold)
+        precision_recall = _precision_recall(rows, threshold=threshold)
         summary[str(horizon)] = {
             "sample_size": len(rows),
-            "direction_accuracy": round(direction_accuracy, 4),
+            "direction_accuracy": (
+                round(direction_accuracy, 4) if direction_accuracy is not None else None
+            ),
             "precision": (
                 round(precision_recall["precision"], 4)
                 if precision_recall["precision"] is not None
@@ -107,9 +136,11 @@ def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
                 if _top_ranked_return(rows) is not None
                 else None
             ),
+            "direction_threshold": round(threshold, 4),
         }
 
     return {
         "horizons": summary,
         "segments": get_segment_calibration(horizon_days),
+        "direction_threshold": round(threshold, 4),
     }

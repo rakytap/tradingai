@@ -4,8 +4,8 @@ import statistics
 
 from tradingai.predict.config import (
     HORIZON_RETURN_MULTIPLIERS,
-    HORIZON_SCALES,
     get_fusion_weights,
+    get_horizon_scales,
     get_prediction_horizons,
 )
 from tradingai.predict.models import AgentSignal, HorizonPrediction, PredictionReport
@@ -71,8 +71,9 @@ def fuse_agent_signals(ticker: str, signals: list[AgentSignal]) -> PredictionRep
     confidence = compute_fusion_confidence(signals, weights)
 
     horizons: list[HorizonPrediction] = []
+    horizon_scales = get_horizon_scales()
     for horizon_days in get_prediction_horizons():
-        scale = HORIZON_SCALES.get(horizon_days, 1.0)
+        scale = horizon_scales.get(horizon_days, 1.0)
         return_multiplier = HORIZON_RETURN_MULTIPLIERS.get(horizon_days, 1.0)
         horizons.append(
             HorizonPrediction(

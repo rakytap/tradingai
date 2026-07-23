@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS predictions (
     agent_payload JSONB NOT NULL DEFAULT '{}',
     reasons JSONB NOT NULL DEFAULT '[]',
 
+    model_name TEXT,
+    model_version TEXT,
+
     actual_return_pct NUMERIC(8,4),
     direction_correct BOOLEAN,
     evaluated_at TIMESTAMPTZ,
@@ -71,3 +74,6 @@ CREATE INDEX IF NOT EXISTS idx_predictions_catalyst_tags
 
 CREATE INDEX IF NOT EXISTS idx_predictions_evaluated
     ON predictions(horizon_days, evaluated_at);
+
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_name TEXT;
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_version TEXT;

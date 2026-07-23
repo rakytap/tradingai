@@ -45,7 +45,11 @@ def evaluate_pending_outcomes(
             if actual_return is None:
                 skipped += 1
                 continue
-            save_outcome(row["id"], actual_return)
+            save_outcome(
+                row["id"],
+                actual_return,
+                probability_up=float(row["probability_up"]),
+            )
             evaluated += 1
         except Exception as exc:
             errors.append(f"{row['ticker']}:{prediction_dt.date()}:{exc}")
