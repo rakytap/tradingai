@@ -43,7 +43,7 @@ flowchart TB
         FRED[FRED API optional]
     end
 
-    subgraph postgres [PostgreSQL database tradingai]
+    subgraph postgres [PostgreSQL tradingai or tradingai_dev]
         Stocks[stocks]
         Prices[daily_prices]
         NewsTable[news_events]
@@ -120,8 +120,11 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_FUSION_TUNING_ENABLED` | Load tuned fusion weights/scales from file when `1` (default); set `0` to use env defaults only |
 | `TRADINGAI_NEWS_SCORING_PATH` | Path to offline-tuned news scoring JSON (default `./data/news_scoring.json`) |
 | `TRADINGAI_NEWS_SCORING_ENABLED` | Load tuned news source weights / recency when `1` (default); set `0` for code/env defaults |
-| `TRADINGAI_DATABASE_URL` | PostgreSQL connection string |
+| `TRADINGAI_ENV` | `dev` or `prod` — selects local DB when URL is unset (`dev` → `tradingai_dev`, `prod` → `tradingai`; default `prod`) |
+| `TRADINGAI_DATABASE_URL` | Optional explicit PostgreSQL URL (overrides `TRADINGAI_ENV`) |
 | `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
+
+MCP servers and CLI jobs read these from [`.env`](.env) (loaded via [`.cursor/mcp.json`](.cursor/mcp.json)). Restart MCP servers after changing `TRADINGAI_ENV`.
 
 **Where data is stored:** [`.env`](.env) on disk in the project root (local only, not committed to git).
 
@@ -140,17 +143,23 @@ bash scripts/pg-init.sh
 | Script | Purpose |
 |--------|---------|
 | `scripts/pg-start.sh` | Starts the Postgres server inside your conda env |
-| `scripts/pg-init.sh` | Creates the `tradingai` database and applies the schema |
+| `scripts/pg-init.sh` | Creates `tradingai` (prod) and `tradingai_dev` (dev), applies schema to both |
 
 **Where data is stored:**
 
 | Location | Contents |
 |----------|----------|
-| PostgreSQL database `tradingai` | All persistent tables (see Step 4) |
+| PostgreSQL database `tradingai` | Production tables (see Step 4) |
+| PostgreSQL database `tradingai_dev` | Development / experiment tables |
 | `$CONDA_PREFIX/var/lib/postgresql/data` | Postgres server data files |
 | `~/tradingai-pg.log` | Postgres server log |
 
-Connection string (default): `postgresql://localhost:5432/tradingai`
+Default URLs (when `TRADINGAI_DATABASE_URL` is unset):
+
+| `TRADINGAI_ENV` | Database | URL |
+|-----------------|----------|-----|
+| `prod` (default) | `tradingai` | `postgresql://localhost:5432/tradingai` |
+| `dev` | `tradingai_dev` | `postgresql://localhost:5432/tradingai_dev` |
 
 ---
 
