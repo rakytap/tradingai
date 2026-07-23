@@ -21,9 +21,10 @@ def _merge_features(base: MacroFeatures, incoming: MacroFeatures) -> MacroFeatur
     return MacroFeatures(**payload)
 
 
-def fetch_macro_features() -> MacroFeatures:
+def fetch_macro_features(*, trend_symbol: str = "SPY") -> MacroFeatures:
     provider_names = get_regime_providers()
     merged: MacroFeatures | None = None
+    symbol = (trend_symbol or "SPY").strip().upper() or "SPY"
 
     for name in provider_names:
         if name == "fred" and not get_fred_api_key():
@@ -32,11 +33,11 @@ def fetch_macro_features() -> MacroFeatures:
         if provider_cls is None:
             continue
         try:
-            features = provider_cls().fetch_features()
+            features = provider_cls().fetch_features(trend_symbol=symbol)
         except Exception:
             continue
         merged = features if merged is None else _merge_features(merged, features)
 
     if merged is None:
-        merged = YFinanceMacroProvider().fetch_features()
+        merged = YFinanceMacroProvider().fetch_features(trend_symbol=symbol)
     return merged

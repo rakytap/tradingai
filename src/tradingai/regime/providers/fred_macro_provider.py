@@ -67,7 +67,8 @@ class FredMacroProvider(MacroDataProvider):
         _cache_set(cache_key, data)
         return data.copy()
 
-    def fetch_features(self) -> MacroFeatures:
+    def fetch_features(self, *, trend_symbol: str = "SPY") -> MacroFeatures:
+        _ = trend_symbol
         treasury_10y_series = self._series(FRED_SERIES["treasury_10y"])
         treasury_2y_series = self._series(FRED_SERIES["treasury_2y"])
         fed_funds_series = self._series(FRED_SERIES["fed_funds_rate"])

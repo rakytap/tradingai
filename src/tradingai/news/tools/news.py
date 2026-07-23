@@ -268,3 +268,41 @@ def analyze_news_sentiment(
             "with_data": sources_with_data,
         },
     }
+
+
+def get_news_events(ticker: str, limit: int = 20) -> dict:
+    """Return L2 typed news-graph events for a ticker (live extract + DB history)."""
+    from tradingai.data.connection import initialize_schema
+    from tradingai.data.repositories.news_graph_events import (
+        get_news_graph_events,
+        save_news_graph_events,
+    )
+    from tradingai.data.repositories.stocks import get_stock
+
+    live = analyze_news_sentiment(ticker)
+    events = live.get("events") or []
+    try:
+        initialize_schema()
+        save_news_graph_events(ticker, events=events)
+        stored = get_news_graph_events(ticker, limit=limit)
+    except Exception:
+        stored = []
+
+    stock = None
+    try:
+        stock = get_stock(ticker)
+    except Exception:
+        stock = None
+    sector = stock.get("sector") if stock else None
+    return {
+        "ticker": ticker.upper(),
+        "sector": sector,
+        "event_score": live.get("event_score"),
+        "event_confidence": live.get("event_confidence"),
+        "propagated_sectors": live.get("propagated_sectors") or {},
+        "event_reasons": live.get("event_reasons") or [],
+        "live_events": events,
+        "stored_events": stored,
+        "sentiment": live.get("sentiment"),
+        "news_score_source": "events" if live.get("event_score") is not None else "sentiment",
+    }

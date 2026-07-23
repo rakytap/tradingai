@@ -77,3 +77,29 @@ CREATE INDEX IF NOT EXISTS idx_predictions_evaluated
 
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_name TEXT;
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_version TEXT;
+
+CREATE TABLE IF NOT EXISTS regime_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    as_of TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_snapshots_as_of
+    ON regime_snapshots(as_of DESC);
+
+CREATE TABLE IF NOT EXISTS news_graph_events (
+    id BIGSERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL REFERENCES stocks(ticker),
+    observed_at TIMESTAMPTZ NOT NULL,
+    event_type TEXT NOT NULL,
+    polarity SMALLINT NOT NULL,
+    themes TEXT[] NOT NULL DEFAULT '{}',
+    sectors TEXT[] NOT NULL DEFAULT '{}',
+    evidence TEXT,
+    confidence NUMERIC(5,4),
+    raw_json JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_graph_events_ticker_observed
+    ON news_graph_events(ticker, observed_at DESC);

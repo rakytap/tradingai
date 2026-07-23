@@ -60,6 +60,11 @@ class SentimentReport(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     sources_used: list[str] = Field(default_factory=list)
     scoring_snapshot: dict | None = None
+    events: list[dict] = Field(default_factory=list)
+    event_score: float | None = None
+    propagated_sectors: dict[str, float] = Field(default_factory=dict)
+    event_confidence: float | None = None
+    event_reasons: list[str] = Field(default_factory=list)
     as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_public_dict(self) -> dict:
@@ -71,6 +76,11 @@ class SentimentReport(BaseModel):
             "confidence": round(self.confidence, 2),
             "sources_used": self.sources_used,
             "as_of": self.as_of.isoformat(),
+            "events": self.events,
+            "event_score": self.event_score,
+            "propagated_sectors": self.propagated_sectors,
+            "event_confidence": self.event_confidence,
+            "event_reasons": self.event_reasons,
         }
         if self.scoring_snapshot is not None:
             payload["scoring_snapshot"] = self.scoring_snapshot

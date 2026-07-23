@@ -54,16 +54,17 @@ class YFinanceMacroProvider(MacroDataProvider):
         _cache_set(cache_key, close)
         return close.copy()
 
-    def fetch_features(self) -> MacroFeatures:
-        spy = self._history("SPY", period="2y")
+    def fetch_features(self, *, trend_symbol: str = "SPY") -> MacroFeatures:
+        symbol = (trend_symbol or "SPY").strip().upper() or "SPY"
+        trend = self._history(symbol, period="2y")
         vix = self._history("^VIX", period="1y")
         tnx = self._history("^TNX", period="1y")
         hyg = self._history("HYG", period="1y")
         lqd = self._history("LQD", period="1y")
 
-        as_of = spy.index[-1].date()
+        as_of = trend.index[-1].date()
         return macro_features_as_of(
-            spy=spy,
+            spy=trend,
             vix=vix,
             hyg=hyg,
             lqd=lqd,

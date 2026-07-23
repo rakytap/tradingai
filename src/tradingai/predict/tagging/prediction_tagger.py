@@ -69,7 +69,7 @@ def classify_prediction_type(
         return "product_catalyst_rally"
     if "analyst_action" in tags and news_score > 0:
         return "analyst_upgrade_rally"
-    if metadata.regime == "bear" and combined < 0:
+    if metadata.regime in {"bear", "bearish", "market:bear"} and combined < 0:
         return "risk_off_drawdown"
     return "general_directional"
 

@@ -207,6 +207,17 @@ Persisted headlines and catalyst tags.
 
 **Populated by:** `tradingai-sync-news`.
 
+### `regime_snapshots`
+
+Structured L1/L4 regime state (market factors + sector board) as JSON.
+
+| Column | Purpose |
+|--------|---------|
+| `as_of` | Timestamp of the regime snapshot |
+| `payload` | JSONB: market factors, sector stances, evidence |
+
+**Populated by:** `tradingai-sync-regime` or MCP `get_regime_state(persist=true)`.
+
 ### `predictions`
 
 The critical learning table — one row per ticker × timestamp × horizon.
@@ -241,6 +252,7 @@ tradingai-sync-news
 |---------|---------|-----------|
 | `tradingai-sync-stocks` | Fetches sector, industry, market cap from yfinance | `stocks` |
 | `tradingai-sync-prices` | Downloads ~2 years of OHLCV, then incremental updates | `daily_prices` |
+| `tradingai-sync-regime` | Builds structured L1/L4 regime state and persists snapshot | `regime_snapshots` |
 | `tradingai-sync-news` | Fetches headlines and catalyst tags per watchlist ticker | `news_events` |
 
 **Tickers synced:** Defined by `TRADINGAI_SYNC_TICKERS` in `.env` (default: `AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY`).
@@ -324,17 +336,40 @@ Artifacts are saved under `TRADINGAI_ML_MODEL_DIR` (default `./data/models`) wit
 
 ```
 Use tradingai-news to analyze sentiment for NVDA and return catalysts and risks.
+Use tradingai-news to get_news_events for NVDA.
 ```
 
-**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** None unless you ran `tradingai-sync-news`.
+**L2 news event graph** (deterministic, no LLM): headlines/filings are matched to typed events (`ai_capex_increase`, `earnings_beat`, `export_restriction`, …). Themes propagate through a static ontology in `src/tradingai/news/ontology.py` (`THEME_EDGES`) to GICS sectors, then to a ticker **event exposure score**. Fusion’s news `AgentSignal.directional_score` uses that exposure when events match; scalar sentiment is still computed and stored in `raw` / snapshots for tuning, and is the fallback when no patterns hit.
+
+```bash
+tradingai-sync-news    # also writes news_graph_events alongside legacy news_events
+```
+
+MCP `get_news_events` returns live extracted events, propagated sector exposures, and recent DB rows.
+
+**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** `news_events` + `news_graph_events` when synced / predict fetch persists.
 
 ### Market regime (`tradingai-regime`)
 
 ```
+Use tradingai-regime to get_regime_state.
 Use tradingai-regime to detect the current market regime and recommended strategy.
 ```
 
-**Data source:** VIX, SPY, optional FRED macro series. **Storage:** None (transient).
+Structured **L1/L4 regime state** (deterministic, no LLM):
+
+- **Market factors:** `risk` (risk_on/risk_off/neutral), `vol`, `rates`, `credit`, `growth_value`, `equity_trend` (plus null placeholders `ai_cycle`, `geopolitics` for later).
+- **Sector board:** each GICS sector → `bullish` / `neutral` / `bearish` from that sector’s ETF trend + market VIX (e.g. Technology → XLK).
+
+```bash
+tradingai-sync-regime    # build state, print board, persist to regime_snapshots
+```
+
+MCP `get_regime_state` returns the full payload; pass `persist=true` to write a DB snapshot. Fusion uses each ticker’s **sector board stance** as the regime agent score (falls back to market equity trend when sector is unknown/ETF). Sector board remains price-based; news event sector exposures live on the news agent until a later merge step.
+
+LLM narratives and sector gating of predictions are **out of scope** for this step.
+
+**Data source:** VIX, SPY, sector ETFs (XLK…XLC), optional FRED. **Storage:** `regime_snapshots` when synced / persisted.
 
 ---
 
@@ -577,8 +612,9 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | Tool | Description |
 |------|-------------|
 | `fetch_macro_features` | Raw and derived macro feature values (VIX, SPY trend, yields, inflation, credit) |
-| `detect_market_regime` | Primary tool — regime label, recommended strategy, confidence, and signal breakdown |
-| `explain_regime` | Human-readable explanation of the current regime |
+| `get_regime_state` | Structured L1/L4 state: market factors + sector board (`persist` optional) |
+| `detect_market_regime` | SPY+VIX aggregate regime label, strategy, confidence, signals |
+| `explain_regime` | Human-readable explanation of the current market regime label |
 
 ### `tradingai-predict` — Predictive Signal Fusion
 

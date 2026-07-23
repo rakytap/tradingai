@@ -7,6 +7,7 @@ from tradingai.data.config import get_sync_tickers
 from tradingai.data.connection import initialize_schema
 from tradingai.data.jobs.progress import log_done, log_error, log_progress, log_start
 from tradingai.data.repositories.news_events import upsert_news_event
+from tradingai.data.repositories.news_graph_events import save_news_graph_events
 from tradingai.data.repositories.stocks import upsert_stock
 from tradingai.news.analysis.catalyst_extractor import CATALYST_PATTERNS
 from tradingai.news.config import get_news_providers, get_social_providers
@@ -82,6 +83,10 @@ def sync_news_events(tickers: list[str] | None = None, count: int = 10) -> dict:
                 )
                 events_written += 1
                 ticker_events += 1
+            try:
+                save_news_graph_events(ticker, events=payload.get("events") or [])
+            except Exception:
+                pass
             synced += 1
             for source in source_stats.get("checked", []):
                 source_summary[source] = source_summary.get(source, 0) + 1

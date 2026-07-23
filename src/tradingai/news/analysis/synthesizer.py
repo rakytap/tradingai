@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from tradingai.news.analysis.catalyst_extractor import extract_catalysts, extract_risk_factors
+from tradingai.news.analysis.events import extract_news_events, score_events_for_ticker
 from tradingai.news.analysis.sentiment_scorer import (
     aggregate_sentiment,
     compute_confidence,
@@ -23,6 +24,7 @@ from tradingai.news.models import (
     SentimentReport,
     SocialPost,
 )
+from tradingai.data.repositories.stocks import get_stock
 
 
 def _social_as_news(posts: list[SocialPost]) -> list[NewsItem]:
@@ -154,6 +156,23 @@ def synthesize_sentiment_report(
         sentiment_scores=raw_scores,
     )
 
+    events = extract_news_events(
+        ticker,
+        news + social_news,
+        press_releases,
+        filings,
+        analyst_actions,
+        earnings_text,
+        transcript_text,
+    )
+    sector = None
+    try:
+        stock = get_stock(ticker)
+        sector = stock.get("sector") if stock else None
+    except Exception:
+        sector = None
+    event_payload = score_events_for_ticker(events, sector=sector)
+
     return SentimentReport(
         ticker=ticker.upper(),
         sentiment=sentiment,
@@ -162,4 +181,9 @@ def synthesize_sentiment_report(
         confidence=confidence,
         sources_used=sources_used or [],
         scoring_snapshot={"items": snapshot_items},
+        events=event_payload.get("events") or [event.to_dict() for event in events],
+        event_score=event_payload.get("event_score"),
+        propagated_sectors=event_payload.get("propagated_sectors") or {},
+        event_confidence=event_payload.get("confidence"),
+        event_reasons=event_payload.get("reasons") or [],
     )

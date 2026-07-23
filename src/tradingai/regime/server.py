@@ -5,8 +5,8 @@ from tradingai.regime.tools import regime
 mcp = FastMCP(
     "tradingai-regime",
     instructions=(
-        "Market regime detection tools for bull, bear, sideways, and high-volatility "
-        "environments. Outputs are informational only and not financial advice."
+        "Market regime detection tools for structured L1/L4 regime state "
+        "(market factors + sector board). Outputs are informational only and not financial advice."
     ),
 )
 
@@ -23,17 +23,27 @@ def fetch_macro_features() -> dict:
 
 @mcp.tool()
 def detect_market_regime() -> dict:
-    """Detect the current market regime and recommended strategy.
+    """Detect the current market regime label (SPY trend + VIX) and strategy.
 
-    Returns regime label, recommended_strategy, confidence, features, and signals.
-    This is informational macro analysis, not financial advice.
+    Prefer get_regime_state for the full structured L1/L4 board.
     """
     return regime.detect_market_regime()
 
 
 @mcp.tool()
+def get_regime_state(persist: bool = False) -> dict:
+    """Return structured regime state: market factors + per-sector board.
+
+    Market factors include risk, vol, rates, credit, growth_value, equity_trend.
+    Sector board maps each GICS sector to bullish/neutral/bearish via sector ETFs.
+    Set persist=true to write a regime_snapshots row.
+    """
+    return regime.get_regime_state(persist=persist)
+
+
+@mcp.tool()
 def explain_regime() -> dict:
-    """Return a human-readable explanation of the current market regime."""
+    """Return a human-readable explanation of the current market regime label."""
     return regime.explain_market_regime()
 
 

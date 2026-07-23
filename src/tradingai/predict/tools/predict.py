@@ -24,7 +24,7 @@ def get_agent_signals_tool(ticker: str) -> dict:
     signals = [
         fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
-        fetch_regime_signal(),
+        fetch_regime_signal(ticker),
     ]
     return {
         "ticker": ticker.upper(),
@@ -36,7 +36,7 @@ def generate_prediction_tool(ticker: str) -> dict:
     signals = [
         fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
-        fetch_regime_signal(),
+        fetch_regime_signal(ticker),
     ]
     report = fuse_agent_signals(ticker, signals)
     if get_predict_backend() == "ml":
@@ -55,7 +55,7 @@ def explain_prediction_tool(ticker: str) -> dict:
     signals = [
         fetch_technical_signal_with_backend(ticker),
         fetch_news_signal(ticker),
-        fetch_regime_signal(),
+        fetch_regime_signal(ticker),
     ]
     report = fuse_agent_signals(ticker, signals)
     return {

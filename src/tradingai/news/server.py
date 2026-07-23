@@ -114,6 +114,22 @@ def analyze_news_sentiment(
     return news.analyze_news_sentiment(ticker=ticker, count=count, rss_url=rss_url)
 
 
+@mcp.tool()
+def get_news_events(ticker: str, limit: int = 20) -> dict:
+    """Inspect L2 typed news-graph events and sector exposures for a ticker.
+
+    Extracts deterministic event types (e.g. ai_capex_increase, earnings_beat)
+    from headlines/filings, propagates themes through the static ontology to
+    sectors, and returns live + stored events. Sentiment remains debug metadata;
+    fusion news score uses event exposure when events match.
+
+    Args:
+        ticker: Stock ticker symbol, e.g. NVDA.
+        limit: Max stored graph events to return from the database.
+    """
+    return news.get_news_events(ticker=ticker, limit=limit)
+
+
 def main() -> None:
     mcp.run()
 
