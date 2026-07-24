@@ -117,21 +117,17 @@ def build_scoring_params(
 def resimulate_news_scores(
     rows: list[dict[str, Any]],
     params: dict[str, Any],
+    *,
+    event_graph_params: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return copies of rows with news_score replaced from rescored snapshots."""
-    updated: list[dict[str, Any]] = []
-    for row in rows:
-        copy = dict(row)
-        snapshot = extract_scoring_snapshot(row)
-        if snapshot is not None:
-            sentiment = rescore_from_snapshot(
-                snapshot,
-                params,
-                as_of=_as_of_for_row(row),
-            )
-            copy["news_score"] = round(sentiment_to_directional(sentiment), 4)
-        updated.append(copy)
-    return updated
+    """Return copies of rows with news_score from events (if any) else sentiment."""
+    from tradingai.news.analysis.event_graph_optimizer import resimulate_fused_news_scores
+
+    return resimulate_fused_news_scores(
+        rows,
+        news_params=params,
+        event_graph_params=event_graph_params,
+    )
 
 
 def _combined_probability(

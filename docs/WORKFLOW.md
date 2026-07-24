@@ -10,6 +10,8 @@ flowchart TD
   train --> predict[Generate fused predictions]
   predict --> rank[L5 rank / paper portfolio]
   rank --> eval[Evaluate outcomes]
+  eval --> tune[Tune news + fusion weights]
+  tune --> predict
   eval --> train
 ```
 
@@ -131,6 +133,7 @@ MCP: `get_regime_state`.
 - Weighted sum (tuned file `data/fusion_weights.json` or `TRADINGAI_PREDICT_WEIGHTS`).
 - Multi-horizon outputs (`TRADINGAI_PREDICT_HORIZONS`, default 3 / 5 / 8).
 - Rows written to `predictions` (scores, sector, regime, optional `ml_rank_score` / `sector_rank`).
+- Retune offline after eval — see [§6](#6-tune-the-fusion-model-offline).
 
 ---
 
@@ -174,13 +177,58 @@ tradingai-sync-prices && tradingai-predict-eval
 After horizons mature (3 / 5 / 8 trading days):
 
 - Backfills `actual_return_pct` / `direction_correct` on `predictions`.
-- Enables track record, segment calibration, and fusion weight tuning (`tradingai-tune-fusion`).
+- Enables track record, segment calibration, and offline tuning below.
+
+---
+
+## 6. Tune the fusion model (offline)
+
+Nested optimizer: **news scoring** → **L2 event graph** → **fusion agent weights / horizon scales**. Each phase writes JSON that prediction time auto-loads (when enabled).
+
+```bash
+tradingai-sync-prices && tradingai-predict-eval   # need evaluated rows first
+tradingai-tune-fusion                             # news → event-graph → fusion
+tradingai-tune-fusion --dry-run                   # preview metrics, no write
+tradingai-tune-fusion --skip-news                 # skip news phase
+tradingai-tune-fusion --skip-events               # skip L2 event-graph phase
+tradingai-tune-fusion --news-only                 # news scoring only
+tradingai-tune-fusion --events-only               # news (unless --skip-news) + event-graph; skip fusion
+```
+
+### What it searches
+
+| Phase | Inputs | Objective | Writes |
+|-------|--------|-----------|--------|
+| **News** | Evaluated rows with `scoring_snapshot` in `agent_payload.news` | Grid source blend + recency half-life; minimize validation Brier (fusion weights held fixed) | `data/news_scoring.json` |
+| **L2 events** | Rows with stored `events` and/or `event_text_corpus` | Greedy knobs + THEME_EDGES weights + EVENT_SPECS enable/theme remap/pattern ablation | `data/event_graph.json` |
+| **Fusion** | Re-simulated `news_score` (events preferred, else sentiment) + stored tech/regime scores | Grid technical/news/regime weights + per-horizon sigmoid scales | `data/fusion_weights.json` |
+
+Useful flags: `--min-samples` (default 30), `--horizon N`, `--weight-step 0.05`, `--train-fraction 0.7`, `--output` / `--news-output` / `--events-output`.
+
+### Requirements
+
+- **Fusion phase:** ≥ `--min-samples` evaluated rows **per horizon**.
+- **News phase:** ≥ `--min-samples` evaluated rows **with** `scoring_snapshot`.
+- **Event-graph phase:** ≥ `--min-samples` rows with `events` and/or `event_text_corpus`. Pattern ablation only runs on rows that include `event_text_corpus` (new predictions after corpus support).
+
+### How inference picks up the result
+
+| Env | Role |
+|-----|------|
+| `TRADINGAI_FUSION_TUNING_ENABLED=1` (default) | Load `TRADINGAI_FUSION_TUNING_PATH` (default `./data/fusion_weights.json`) |
+| `TRADINGAI_NEWS_SCORING_ENABLED=1` (default) | Load `TRADINGAI_NEWS_SCORING_PATH` (default `./data/news_scoring.json`) |
+| `TRADINGAI_EVENT_GRAPH_ENABLED=1` (default) | Load `TRADINGAI_EVENT_GRAPH_PATH` (default `./data/event_graph.json`) |
+| Set any to `0` | Fall back to env/code defaults for that layer |
+
+Restart MCP servers / workers after tuning so config caches reload. New `tradingai-predict-batch` runs then use the tuned weights; L5 ranking and paper portfolio still sit on top of those fused scores.
+
+Suggested cadence: retune weekly once eval history is large enough (see README Step 9b for full detail).
 
 ---
 
 ## One-line ops loop
 
-Sync stocks / prices / news / regime / ticker-kg → train sector CS models → batch predict (bullish-only optional) → paper portfolio from ranked bullish names → evaluate after horizons mature → retrain / retune as needed.
+Sync stocks / prices / news / regime / ticker-kg → train sector CS models → batch predict (bullish-only optional) → paper portfolio from ranked bullish names → evaluate after horizons mature → `tradingai-tune-fusion` → retrain / re-predict as needed.
 
 ---
 
@@ -202,8 +250,13 @@ tradingai-train-models --by-sector --cross-section --horizon 5
 tradingai-predict-batch --bullish-sectors-only
 tradingai-paper-portfolio
 
-# Evaluate
+# Evaluate + tune fusion
 tradingai-sync-prices && tradingai-predict-eval
+tradingai-tune-fusion
+# tradingai-tune-fusion --dry-run
+# tradingai-tune-fusion --skip-news
+# tradingai-tune-fusion --skip-events
+# tradingai-tune-fusion --events-only
 ```
 
 For MCP tool lists and setup, see [README.md](README.md).

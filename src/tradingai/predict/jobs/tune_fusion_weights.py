@@ -4,17 +4,25 @@ import argparse
 import json
 from pathlib import Path
 
+from tradingai.news.analysis.event_graph_optimizer import (
+    EventGraphOptimizationError,
+    optimize_event_graph,
+    resimulate_fused_news_scores,
+)
 from tradingai.news.analysis.scoring_optimizer import (
     NewsScoringOptimizationError,
     optimize_news_scoring,
-    resimulate_news_scores,
 )
 from tradingai.news.config import (
+    DEFAULT_EVENT_GRAPH_PATH,
     DEFAULT_NEWS_SCORING_PATH,
+    clear_event_graph_cache,
     clear_news_scoring_cache,
     default_news_scoring_params,
+    save_event_graph_params,
     save_news_scoring_params,
 )
+from tradingai.news.analysis.events import default_event_graph_params
 from tradingai.predict.config import (
     DEFAULT_FUSION_TUNING_PATH,
     DEFAULT_WEIGHTS,
@@ -57,6 +65,46 @@ def _print_news_summary(result: dict, *, output: Path, dry_run: bool) -> None:
     )
     if dry_run:
         print("  Dry run — news scoring file not written.")
+    else:
+        print(f"  Saved to {output}")
+
+
+def _print_events_summary(result: dict, *, output: Path, dry_run: bool) -> None:
+    print("Event-graph optimization complete")
+    print(f"  Metric: {result['metric']} (train_fraction={result['train_fraction']})")
+    print(
+        "  Knobs: "
+        f"decay={result['propagation_decay']} "
+        f"divisor={result['score_divisor']} "
+        f"edge_scale={result['edge_scale']} "
+        f"max_hops={result['max_hops']}"
+    )
+    enabled = sum(1 for spec in result["event_specs"] if spec.get("enabled", True))
+    print(f"  Event specs enabled: {enabled}/{len(result['event_specs'])}")
+    samples = result.get("sample_sizes") or {}
+    print(
+        "  Samples: "
+        f"eligible={samples.get('eligible')} "
+        f"corpus={samples.get('with_event_text_corpus')} "
+        f"train={samples.get('train')} "
+        f"val={samples.get('validation')}"
+    )
+    baseline = result["baseline_validation"]
+    tuned = result["tuned_validation"]
+    print(
+        "  Validation baseline: "
+        f"brier={baseline.get('brier')} "
+        f"direction_accuracy={baseline.get('direction_accuracy')} "
+        f"n={baseline.get('sample_size')}"
+    )
+    print(
+        "  Validation tuned:    "
+        f"brier={tuned.get('brier')} "
+        f"direction_accuracy={tuned.get('direction_accuracy')} "
+        f"n={tuned.get('sample_size')}"
+    )
+    if dry_run:
+        print("  Dry run — event graph file not written.")
     else:
         print(f"  Saved to {output}")
 
@@ -109,6 +157,7 @@ def tune_fusion_weights(
     *,
     output: Path,
     news_output: Path,
+    events_output: Path,
     train_fraction: float,
     min_samples: int,
     horizon_days: int | None,
@@ -116,9 +165,15 @@ def tune_fusion_weights(
     weight_step: float,
     skip_news: bool = False,
     news_only: bool = False,
+    skip_events: bool = False,
+    events_only: bool = False,
 ) -> dict:
     if skip_news and news_only:
         raise FusionOptimizationError("Cannot combine --skip-news and --news-only.")
+    if skip_events and events_only:
+        raise FusionOptimizationError("Cannot combine --skip-events and --events-only.")
+    if news_only and events_only:
+        raise FusionOptimizationError("Cannot combine --news-only and --events-only.")
 
     horizons, rows = _load_rows(horizon_days)
     fusion_weights = get_fusion_weights()
@@ -145,10 +200,49 @@ def tune_fusion_weights(
     if news_only:
         return {
             "news": news_result,
+            "events": None,
             "fusion": None,
         }
 
-    fusion_rows = resimulate_news_scores(rows, news_params) if not skip_news else rows
+    events_result: dict | None = None
+    event_graph_params = default_event_graph_params()
+
+    if not skip_events:
+        events_result = optimize_event_graph(
+            rows,
+            fusion_weights=fusion_weights,
+            horizon_scales=horizon_scales,
+            news_params=None if skip_news else news_params,
+            train_fraction=train_fraction,
+            min_samples=min_samples,
+        )
+        event_graph_params = {
+            "propagation_decay": events_result["propagation_decay"],
+            "max_hops": events_result["max_hops"],
+            "score_divisor": events_result["score_divisor"],
+            "edge_scale": events_result["edge_scale"],
+            "theme_edges": events_result["theme_edges"],
+            "event_specs": events_result["event_specs"],
+        }
+        if not dry_run:
+            save_event_graph_params(events_result, path=events_output)
+
+    if events_only:
+        return {
+            "news": news_result,
+            "events": events_result,
+            "fusion": None,
+        }
+
+    fusion_rows = resimulate_fused_news_scores(
+        rows,
+        news_params=None if skip_news else news_params,
+        event_graph_params=None if skip_events else event_graph_params,
+    )
+    # If both phases skipped, keep stored news_score (resimulate is no-op without params).
+    if skip_news and skip_events:
+        fusion_rows = rows
+
     fusion_result = optimize_fusion(
         fusion_rows,
         horizons=horizons,
@@ -164,9 +258,11 @@ def tune_fusion_weights(
         output.write_text(json.dumps(fusion_result, indent=2) + "\n", encoding="utf-8")
         clear_fusion_config_cache()
         clear_news_scoring_cache()
+        clear_event_graph_cache()
 
     return {
         "news": news_result,
+        "events": events_result,
         "fusion": fusion_result,
     }
 
@@ -174,8 +270,8 @@ def tune_fusion_weights(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Tune news scoring params (nested), then fusion agent weights and "
-            "horizon scales from evaluated predictions."
+            "Tune news scoring, L2 event-graph structure/knobs, then fusion agent "
+            "weights and horizon scales from evaluated predictions."
         )
     )
     parser.add_argument(
@@ -191,6 +287,12 @@ def main() -> None:
         help="Path for tuned news scoring JSON (default: data/news_scoring.json).",
     )
     parser.add_argument(
+        "--events-output",
+        type=Path,
+        default=DEFAULT_EVENT_GRAPH_PATH,
+        help="Path for tuned event-graph JSON (default: data/event_graph.json).",
+    )
+    parser.add_argument(
         "--train-fraction",
         type=float,
         default=0.7,
@@ -200,7 +302,10 @@ def main() -> None:
         "--min-samples",
         type=int,
         default=30,
-        help="Minimum evaluated rows required (per horizon for fusion; with snapshots for news).",
+        help=(
+            "Minimum evaluated rows required (per horizon for fusion; "
+            "with snapshots for news; with events for L2)."
+        ),
     )
     parser.add_argument(
         "--horizon",
@@ -216,12 +321,22 @@ def main() -> None:
     parser.add_argument(
         "--skip-news",
         action="store_true",
-        help="Skip news scoring phase (fusion-only, prior behavior).",
+        help="Skip news scoring phase.",
     )
     parser.add_argument(
         "--news-only",
         action="store_true",
-        help="Tune and write news scoring only; skip fusion phase.",
+        help="Tune and write news scoring only; skip event-graph and fusion phases.",
+    )
+    parser.add_argument(
+        "--skip-events",
+        action="store_true",
+        help="Skip L2 event-graph tuning phase.",
+    )
+    parser.add_argument(
+        "--events-only",
+        action="store_true",
+        help="Tune event-graph (and news unless --skip-news); skip fusion phase.",
     )
     parser.add_argument(
         "--dry-run",
@@ -234,6 +349,7 @@ def main() -> None:
         result = tune_fusion_weights(
             output=args.output,
             news_output=args.news_output,
+            events_output=args.events_output,
             train_fraction=args.train_fraction,
             min_samples=args.min_samples,
             horizon_days=args.horizon,
@@ -241,12 +357,22 @@ def main() -> None:
             weight_step=args.weight_step,
             skip_news=args.skip_news,
             news_only=args.news_only,
+            skip_events=args.skip_events,
+            events_only=args.events_only,
         )
-    except (FusionOptimizationError, NewsScoringOptimizationError) as exc:
+    except (
+        FusionOptimizationError,
+        NewsScoringOptimizationError,
+        EventGraphOptimizationError,
+    ) as exc:
         raise SystemExit(str(exc)) from exc
 
     if result.get("news") is not None:
         _print_news_summary(result["news"], output=args.news_output, dry_run=args.dry_run)
+    if result.get("events") is not None:
+        _print_events_summary(
+            result["events"], output=args.events_output, dry_run=args.dry_run
+        )
     if result.get("fusion") is not None:
         _print_fusion_summary(result["fusion"], output=args.output, dry_run=args.dry_run)
     print(json.dumps(result, indent=2))

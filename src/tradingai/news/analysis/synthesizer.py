@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from tradingai.news.analysis.catalyst_extractor import extract_catalysts, extract_risk_factors
-from tradingai.news.analysis.events import extract_news_events, score_events_for_ticker
+from tradingai.news.analysis.events import (
+    collect_event_extraction_inputs,
+    score_events_for_ticker,
+)
 from tradingai.news.analysis.related_candidates import resolve_related_candidates
 from tradingai.news.analysis.sentiment_scorer import (
     aggregate_sentiment,
@@ -157,7 +160,7 @@ def synthesize_sentiment_report(
         sentiment_scores=raw_scores,
     )
 
-    events = extract_news_events(
+    events, event_text_corpus = collect_event_extraction_inputs(
         ticker,
         news + social_news,
         press_releases,
@@ -193,4 +196,5 @@ def synthesize_sentiment_report(
         event_confidence=event_payload.get("confidence"),
         event_reasons=event_payload.get("reasons") or [],
         related_candidates=related_candidates,
+        event_text_corpus=event_text_corpus,
     )
