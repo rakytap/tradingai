@@ -256,7 +256,7 @@ tradingai-sync-news
 | `tradingai-sync-prices` | Downloads ~2 years of OHLCV, then incremental updates | `daily_prices` |
 | `tradingai-sync-regime` | Builds structured L1/L4 regime state and persists snapshot | `regime_snapshots` |
 | `tradingai-sync-news` | Fetches headlines and catalyst tags per watchlist ticker | `news_events` / `news_graph_events` |
-| `tradingai-sync-ticker-kg` | Upserts curated L3 entity graph into Postgres | `ticker_kg_nodes` |
+| `tradingai-sync-ticker-kg` | Upserts curated L3 entity graph into Postgres (`--preserve-overlays` default) | `ticker_kg_nodes` |
 
 **Tickers synced:** Defined by `TRADINGAI_SYNC_TICKERS` in `.env` (default: `AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY`).
 
@@ -367,15 +367,22 @@ MCP `get_news_events` returns live extracted events, propagated sector exposures
 **L3 static knowledge graph** (curated, not scraped): ticker → peers / suppliers / customers / thematic proxies (SMH, XLU, …), commodities, and rate/FX flags live in `src/tradingai/news/entity_graph.py`. L2 event themes expand to **related candidates** (e.g. MSFT AI capex → SMH / utilities / grid). Candidates are attached on news `raw` for debugging; fusion news `directional_score` is unchanged until a later gating step. Neo4j / live supply-chain scrape are out of scope.
 
 ```bash
-tradingai-sync-ticker-kg    # upsert ENTITY_GRAPH into ticker_kg_nodes
+tradingai-sync-ticker-kg              # seed DB; --preserve-overlays (default) keeps LLM relation lists
+tradingai-sync-ticker-kg --force-seed # replace from ENTITY_GRAPH fully
+tradingai-propose-ticker-kg MSFT      # LLM draft → data/kg_proposals/
+#   needs OPENAI_API_KEY (provider=openai) or GROQ_API_KEY (TRADINGAI_LLM_PROVIDER=groq)
+tradingai-propose-ticker-kg MSFT --provider groq
+tradingai-apply-ticker-kg path.json   # human-approved write to ticker_kg_nodes
 ```
+
+Runtime lookup: **DB overlay wins** over the Python seed when a `ticker_kg_nodes` row exists. MCP: `propose_ticker_graph_edges`, `apply_ticker_graph_edges`.
 
 ```
 Use tradingai-news to get_ticker_graph for MSFT.
 Use tradingai-news to get_related_tickers for MSFT.
 ```
 
-**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** `news_events` + `news_graph_events` when synced / predict fetch persists; `ticker_kg_nodes` when `tradingai-sync-ticker-kg` is run.
+**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** `news_events` + `news_graph_events` when synced / predict fetch persists; `ticker_kg_nodes` when `tradingai-sync-ticker-kg` / apply curator is run.
 
 ### Market regime (`tradingai-regime`)
 

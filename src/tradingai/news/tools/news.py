@@ -319,7 +319,7 @@ def get_ticker_graph(ticker: str) -> dict:
 def get_related_tickers(ticker: str, limit: int = 12) -> dict:
     """Expand L2 events through the L3 entity graph into related candidates."""
     from tradingai.news.analysis.related_candidates import resolve_related_candidates
-    from tradingai.news.entity_graph import get_node
+    from tradingai.news.entity_graph import resolve_ticker_node
 
     live = analyze_news_sentiment(ticker)
     events = live.get("events") or []
@@ -328,7 +328,7 @@ def get_related_tickers(ticker: str, limit: int = 12) -> dict:
         events=events,
         limit=limit,
     )
-    node = get_node(ticker)
+    node = resolve_ticker_node(ticker)
     return {
         "ticker": ticker.upper(),
         "in_graph": node is not None,
@@ -345,3 +345,22 @@ def get_related_tickers(ticker: str, limit: int = 12) -> dict:
         "event_score": live.get("event_score"),
         "news_score_unchanged": True,
     }
+
+
+def propose_ticker_graph_edges(
+    ticker: str,
+    mode: str = "merge",
+    model: str | None = None,
+    provider: str | None = None,
+) -> dict:
+    """LLM proposes peers/suppliers/customers/thematic_proxies; writes pending JSON."""
+    from tradingai.news.kg_curator.propose import propose_ticker_graph_edges as _propose
+
+    return _propose(ticker, mode=mode, model=model, provider=provider)
+
+
+def apply_ticker_graph_edges(proposal_path: str) -> dict:
+    """Apply a reviewed proposal JSON into ticker_kg_nodes (explicit path required)."""
+    from tradingai.news.kg_curator.apply import apply_proposal
+
+    return apply_proposal(proposal_path)

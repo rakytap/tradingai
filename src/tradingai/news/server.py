@@ -132,10 +132,10 @@ def get_news_events(ticker: str, limit: int = 20) -> dict:
 
 @mcp.tool()
 def get_ticker_graph(ticker: str) -> dict:
-    """Inspect the static L3 ticker knowledge-graph node and one-hop neighbors.
+    """Inspect the L3 ticker knowledge-graph node and one-hop neighbors.
 
-    Curated peers, suppliers, customers, thematic proxies (e.g. SMH, XLU),
-    commodities, and rate/FX flags. Not scraped; source is entity_graph.py.
+    Resolves DB overlay (LLM-applied) over the static entity_graph.py seed.
+    Peers, suppliers, customers, thematic proxies, commodities, rate/FX flags.
 
     Args:
         ticker: Stock ticker symbol, e.g. MSFT.
@@ -155,6 +155,47 @@ def get_related_tickers(ticker: str, limit: int = 12) -> dict:
         limit: Maximum related candidates to return.
     """
     return news.get_related_tickers(ticker=ticker, limit=limit)
+
+
+@mcp.tool()
+def propose_ticker_graph_edges(
+    ticker: str,
+    mode: str = "merge",
+    model: str | None = None,
+    provider: str | None = None,
+) -> dict:
+    """LLM proposes L3 peers/suppliers/customers/thematic_proxies for review.
+
+    Writes a pending JSON under TRADINGAI_KG_PROPOSAL_DIR. Does not change live
+    scoring until apply_ticker_graph_edges is called with that path.
+    Providers: openai (OPENAI_API_KEY) or groq (GROQ_API_KEY). Set
+    TRADINGAI_LLM_PROVIDER or pass provider=.
+
+    Args:
+        ticker: Subject ticker, e.g. MSFT.
+        mode: merge (default) or replace relation lists.
+        model: Optional model override (OPENAI_MODEL / GROQ_MODEL).
+        provider: Optional openai or groq override.
+    """
+    return news.propose_ticker_graph_edges(
+        ticker=ticker,
+        mode=mode,
+        model=model,
+        provider=provider,
+    )
+
+
+@mcp.tool()
+def apply_ticker_graph_edges(proposal_path: str) -> dict:
+    """Apply a reviewed proposal JSON into ticker_kg_nodes (DB overlay).
+
+    Explicit path required — no auto-apply. Runtime related_candidates then
+    prefer the DB overlay over the static ENTITY_GRAPH seed.
+
+    Args:
+        proposal_path: Path returned by propose_ticker_graph_edges.
+    """
+    return news.apply_ticker_graph_edges(proposal_path=proposal_path)
 
 
 def main() -> None:

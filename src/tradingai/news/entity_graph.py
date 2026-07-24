@@ -353,6 +353,43 @@ def get_node(ticker: str) -> TickerNode | None:
     return ENTITY_GRAPH.get(ticker.upper())
 
 
+def node_from_dict(data: dict) -> TickerNode:
+    """Build a TickerNode from a DB/API dict (relation lists may be empty)."""
+    duration = data.get("duration_bucket")
+    if duration is not None:
+        duration = str(duration)
+    return _node(
+        str(data.get("ticker", "")),
+        sector=data.get("sector"),
+        peers=data.get("peers") or (),
+        suppliers=data.get("suppliers") or (),
+        customers=data.get("customers") or (),
+        thematic_proxies=data.get("thematic_proxies") or (),
+        commodities=data.get("commodities") or (),
+        rate_sensitive=bool(data.get("rate_sensitive", False)),
+        fx_sensitive=bool(data.get("fx_sensitive", False)),
+        duration_bucket=duration,  # type: ignore[arg-type]
+        notes=data.get("notes"),
+    )
+
+
+def resolve_ticker_node(
+    ticker: str,
+    *,
+    database_url: str | None = None,
+) -> TickerNode | None:
+    """Prefer DB overlay row; fall back to static ENTITY_GRAPH. Never raises."""
+    try:
+        from tradingai.data.repositories.ticker_kg import fetch_ticker_kg_row
+
+        row = fetch_ticker_kg_row(ticker, database_url=database_url)
+        if row is not None:
+            return node_from_dict(row)
+    except Exception:
+        pass
+    return get_node(ticker)
+
+
 def list_tickers() -> list[str]:
     return sorted(ENTITY_GRAPH.keys())
 
@@ -362,7 +399,7 @@ def neighbors(
     *,
     kinds: Iterable[RelationKind] | None = None,
 ) -> list[tuple[str, RelationKind]]:
-    node = get_node(ticker)
+    node = resolve_ticker_node(ticker)
     if node is None:
         return []
     selected = list(kinds) if kinds is not None else list(RELATION_ATTRS.keys())

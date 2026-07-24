@@ -10,6 +10,7 @@ from tradingai.news.entity_graph import (
     neighbors,
     nodes_by_commodity,
     nodes_by_flag,
+    resolve_ticker_node,
 )
 
 RELATION_WEIGHTS: dict[RelationKind, float] = {
@@ -100,9 +101,9 @@ def resolve_related_candidates(
     themes: list[str] | None = None,
     limit: int = 12,
 ) -> list[dict]:
-    """Expand L2 themes through the static L3 entity graph into related tickers."""
+    """Expand L2 themes through the L3 entity graph into related tickers."""
     symbol = ticker.upper()
-    node = get_node(symbol)
+    node = resolve_ticker_node(symbol)
     if node is None:
         return []
 
@@ -237,7 +238,7 @@ def resolve_related_candidates(
 
 def ticker_graph_view(ticker: str) -> dict:
     """One-hop inspection payload for MCP."""
-    node = get_node(ticker)
+    node = resolve_ticker_node(ticker)
     if node is None:
         return {
             "ticker": ticker.upper(),
@@ -245,15 +246,29 @@ def ticker_graph_view(ticker: str) -> dict:
             "node": None,
             "neighbors": [],
             "graph_size": len(ENTITY_GRAPH),
+            "source": None,
         }
     hop = [
         {"ticker": related, "relation": kind}
         for related, kind in neighbors(ticker)
     ]
+    static = get_node(ticker)
+    source = "db_overlay" if static is None or node.to_dict() != static.to_dict() else "static"
+    # Prefer explicit DB presence check when possible.
+    try:
+        from tradingai.data.repositories.ticker_kg import fetch_ticker_kg_row
+
+        if fetch_ticker_kg_row(ticker) is not None:
+            source = "db_overlay"
+        else:
+            source = "static"
+    except Exception:
+        source = "static" if static is not None else "unknown"
     return {
         "ticker": node.ticker,
         "in_graph": True,
         "node": node.to_dict(),
         "neighbors": hop,
         "graph_size": len(ENTITY_GRAPH),
+        "source": source,
     }

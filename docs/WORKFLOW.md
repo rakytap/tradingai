@@ -37,7 +37,15 @@ Watchlist comes from `TRADINGAI_SYNC_TICKERS` in `.env`.
 | Prices | `tradingai-sync-prices` | `daily_prices` (equities + macros SPY/VIX/HYG/LQD, sector ETFs) |
 | Regime board | `tradingai-sync-regime` | `regime_snapshots` (L1 factors + L4 sector stances) |
 | News | `tradingai-sync-news` | `news_events` + L2 `news_graph_events` |
-| Entity graph | `tradingai-sync-ticker-kg` | `ticker_kg_nodes` (static L3 DB mirror) |
+| Entity graph | `tradingai-sync-ticker-kg` | `ticker_kg_nodes` (static L3 DB mirror; `--preserve-overlays` default) |
+
+Optional L3 LLM curator (human-approved; does **not** change fusion math):
+
+```bash
+tradingai-propose-ticker-kg MSFT              # OPENAI_API_KEY by default
+tradingai-propose-ticker-kg MSFT --provider groq   # GROQ_API_KEY + Groq OpenAI-compatible API
+tradingai-apply-ticker-kg <path>              # writes DB overlay used by related_candidates
+```
 
 **Suggested cadence:** prices daily; stocks/news weekly; regime when you want a fresh board.
 
@@ -108,8 +116,9 @@ flowchart TD
 - Headlines/filings → typed events → theme ontology → sector exposure → news `directional_score`.
 - Scalar sentiment stays in `raw` (fallback if no events match).
 - L3 attaches `related_candidates` (e.g. MSFT AI capex → SMH / utilities / grid) for inspection; **does not** change the news score in this step.
+- Edges come from the static seed and/or **LLM curator overlays** in `ticker_kg_nodes` (propose → review → apply).
 
-MCP helpers: `analyze_news_sentiment`, `get_news_events`, `get_ticker_graph`, `get_related_tickers`.
+MCP helpers: `analyze_news_sentiment`, `get_news_events`, `get_ticker_graph`, `get_related_tickers`, `propose_ticker_graph_edges`, `apply_ticker_graph_edges`.
 
 ### Regime agent (L1 / L4)
 
@@ -184,6 +193,7 @@ tradingai-sync-prices
 tradingai-sync-regime
 tradingai-sync-news
 tradingai-sync-ticker-kg
+# optional: tradingai-propose-ticker-kg MSFT && tradingai-apply-ticker-kg <proposal.json>
 
 # Models
 tradingai-train-models --by-sector --cross-section --horizon 5
