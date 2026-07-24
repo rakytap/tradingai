@@ -77,6 +77,8 @@ CREATE INDEX IF NOT EXISTS idx_predictions_evaluated
 
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_name TEXT;
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_version TEXT;
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS ml_rank_score NUMERIC(8,4);
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS sector_rank INT;
 
 CREATE TABLE IF NOT EXISTS regime_snapshots (
     id BIGSERIAL PRIMARY KEY,
@@ -103,3 +105,19 @@ CREATE TABLE IF NOT EXISTS news_graph_events (
 
 CREATE INDEX IF NOT EXISTS idx_news_graph_events_ticker_observed
     ON news_graph_events(ticker, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS ticker_kg_nodes (
+    ticker TEXT PRIMARY KEY REFERENCES stocks(ticker),
+    sector TEXT,
+    peers TEXT[] NOT NULL DEFAULT '{}',
+    suppliers TEXT[] NOT NULL DEFAULT '{}',
+    customers TEXT[] NOT NULL DEFAULT '{}',
+    thematic_proxies TEXT[] NOT NULL DEFAULT '{}',
+    commodities TEXT[] NOT NULL DEFAULT '{}',
+    rate_sensitive BOOLEAN NOT NULL DEFAULT false,
+    fx_sensitive BOOLEAN NOT NULL DEFAULT false,
+    duration_bucket TEXT,
+    notes TEXT,
+    raw_json JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

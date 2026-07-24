@@ -22,14 +22,14 @@ def save_prediction_rows(
                     sector, regime, technical_score, news_score, regime_score,
                     catalyst_tags, reason_tags, prediction_type,
                     agent_payload, reasons,
-                    model_name, model_version
+                    model_name, model_version, ml_rank_score, sector_rank
                 ) VALUES (
                     %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s::jsonb, %s::jsonb,
-                    %s, %s
+                    %s, %s, %s, %s
                 )
                 ON CONFLICT (ticker, timestamp, horizon_days) DO UPDATE SET
                     probability_up = EXCLUDED.probability_up,
@@ -47,7 +47,9 @@ def save_prediction_rows(
                     agent_payload = EXCLUDED.agent_payload,
                     reasons = EXCLUDED.reasons,
                     model_name = EXCLUDED.model_name,
-                    model_version = EXCLUDED.model_version
+                    model_version = EXCLUDED.model_version,
+                    ml_rank_score = EXCLUDED.ml_rank_score,
+                    sector_rank = EXCLUDED.sector_rank
                 RETURNING id
                 """,
                 (
@@ -70,6 +72,8 @@ def save_prediction_rows(
                     json.dumps(row.get("reasons", [])),
                     row.get("model_name"),
                     row.get("model_version"),
+                    row.get("ml_rank_score"),
+                    row.get("sector_rank"),
                 ),
             ).fetchone()
             ids.append(int(result[0]))

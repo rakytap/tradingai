@@ -55,3 +55,60 @@ def list_tickers(database_url: str | None = None) -> list[str]:
     with get_connection(database_url) as conn:
         rows = conn.execute("SELECT ticker FROM stocks ORDER BY ticker").fetchall()
     return [row[0] for row in rows]
+
+
+def list_sectors(
+    *,
+    exclude_etf: bool = True,
+    database_url: str | None = None,
+) -> list[str]:
+    with get_connection(database_url) as conn:
+        if exclude_etf:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT sector
+                FROM stocks
+                WHERE sector IS NOT NULL
+                  AND TRIM(sector) <> ''
+                  AND LOWER(TRIM(sector)) <> 'etf'
+                ORDER BY sector
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT sector
+                FROM stocks
+                WHERE sector IS NOT NULL AND TRIM(sector) <> ''
+                ORDER BY sector
+                """
+            ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def list_tickers_by_sector(
+    sector: str,
+    *,
+    exclude_etf: bool = True,
+    database_url: str | None = None,
+) -> list[str]:
+    with get_connection(database_url) as conn:
+        if exclude_etf:
+            rows = conn.execute(
+                """
+                SELECT ticker
+                FROM stocks
+                WHERE sector = %s
+                  AND (industry IS NULL OR LOWER(TRIM(industry)) <> 'exchange traded fund')
+                ORDER BY ticker
+                """,
+                (sector,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT ticker FROM stocks WHERE sector = %s ORDER BY ticker
+                """,
+                (sector,),
+            ).fetchall()
+    return [str(row[0]) for row in rows]

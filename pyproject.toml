@@ -41,6 +41,7 @@ tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
 tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"
 tradingai-sync-news = "tradingai.data.jobs.sync_news_events:main"
 tradingai-sync-regime = "tradingai.data.jobs.sync_regime:main"
+tradingai-sync-ticker-kg = "tradingai.data.jobs.sync_ticker_kg:main"
 tradingai-train-models = "tradingai.analysis.ml.training:main"
 
 [build-system]

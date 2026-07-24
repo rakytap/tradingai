@@ -108,6 +108,24 @@ def get_segment_calibration(horizon_days: int | None = None) -> dict:
     return predict.get_segment_calibration_tool(horizon_days)
 
 
+@mcp.tool()
+def rank_sector_candidates(
+    sector: str | None = None,
+    limit: int = 10,
+    horizon_days: int | None = None,
+) -> dict:
+    """L5 cross-sectional ranks inside L4 bullish sectors (or one sector).
+
+    ML scores who beats sector peers; L4 decides which sectors are eligible.
+    When sector is omitted, unions top names across all bullish board sectors.
+    """
+    return predict.rank_sector_candidates_tool(
+        sector=sector,
+        limit=limit,
+        horizon_days=horizon_days,
+    )
+
+
 def main() -> None:
     mcp.run()
 

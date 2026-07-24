@@ -37,6 +37,14 @@ def save_prediction(report: PredictionReport) -> list[int]:
     timestamp = report.as_of.astimezone(timezone.utc)
     model_name = None
     model_version = None
+    technical = next((s for s in report.agent_signals if s.agent == "technical"), None)
+    ml_rank_score = None
+    sector_rank = None
+    if technical:
+        ml_rank_score = technical.raw.get("ml_rank_score")
+        if ml_rank_score is None:
+            ml_rank_score = technical.raw.get("cs_prob")
+        sector_rank = technical.raw.get("sector_rank")
     if get_predict_backend() == "ml":
         model_name = get_ml_model_name()
         try:
@@ -68,6 +76,8 @@ def save_prediction(report: PredictionReport) -> list[int]:
                 "reasons": report.reasons,
                 "model_name": model_name,
                 "model_version": model_version,
+                "ml_rank_score": ml_rank_score,
+                "sector_rank": sector_rank,
             }
         )
     return predictions_repo.save_prediction_rows(rows)

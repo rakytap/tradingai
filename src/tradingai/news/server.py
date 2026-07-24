@@ -130,6 +130,33 @@ def get_news_events(ticker: str, limit: int = 20) -> dict:
     return news.get_news_events(ticker=ticker, limit=limit)
 
 
+@mcp.tool()
+def get_ticker_graph(ticker: str) -> dict:
+    """Inspect the static L3 ticker knowledge-graph node and one-hop neighbors.
+
+    Curated peers, suppliers, customers, thematic proxies (e.g. SMH, XLU),
+    commodities, and rate/FX flags. Not scraped; source is entity_graph.py.
+
+    Args:
+        ticker: Stock ticker symbol, e.g. MSFT.
+    """
+    return news.get_ticker_graph(ticker=ticker)
+
+
+@mcp.tool()
+def get_related_tickers(ticker: str, limit: int = 12) -> dict:
+    """Expand L2 news events through the L3 graph into related ticker candidates.
+
+    Example: MSFT AI capex → SMH / utilities / grid names. Informational only;
+    does not change the subject's fusion news directional_score.
+
+    Args:
+        ticker: Stock ticker symbol, e.g. MSFT.
+        limit: Maximum related candidates to return.
+    """
+    return news.get_related_tickers(ticker=ticker, limit=limit)
+
+
 def main() -> None:
     mcp.run()
 

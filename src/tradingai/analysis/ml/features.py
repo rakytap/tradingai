@@ -10,11 +10,14 @@ from tradingai.analysis.indicators import (
     MACD_LINE,
     MACD_SIGNAL,
     MOMENTUM_COLUMN,
+    RS_LOOKBACK,
     SUPPORTED_INDICATORS,
     compute_indicators,
 )
 from tradingai.analysis.ml.config import get_ml_include_regime
 from tradingai.analysis.ml.regime_features import REGIME_FEATURE_COLUMNS
+
+SECTOR_EXCESS_LOOKBACK = 21
 
 TECHNICAL_FEATURE_COLUMNS = [
     "rsi",
@@ -38,6 +41,9 @@ TECHNICAL_FEATURE_COLUMNS = [
     "volume_zscore",
     "rs_spread",
     "rs_line",
+    "sector_rs_spread",
+    "sector_rs_line",
+    "sector_excess_1m",
 ]
 
 ML_INDICATORS = sorted(SUPPORTED_INDICATORS)
@@ -86,11 +92,52 @@ def _row_features(row: pd.Series) -> dict[str, float | None]:
     }
 
 
+def attach_sector_relative_features(
+    frame: pd.DataFrame,
+    sector_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Add sector ETF relative-strength columns onto an indicator feature frame."""
+    result = frame.copy()
+    if sector_df is None or sector_df.empty or "close" not in result.columns:
+        result["sector_rs_spread"] = pd.NA
+        result["sector_rs_line"] = pd.NA
+        result["sector_excess_1m"] = pd.NA
+        return result
+
+    if "date" in result.columns:
+        work_index = pd.to_datetime(result["date"])
+        sector_close = sector_df["close"].reindex(work_index, method="ffill")
+        symbol_close = result["close"].reset_index(drop=True)
+        sector_close = pd.Series(sector_close.to_numpy(), index=symbol_close.index)
+    else:
+        sector_close = sector_df["close"].reindex(result.index, method="ffill")
+        symbol_close = result["close"]
+
+    symbol_return = symbol_close.pct_change(RS_LOOKBACK)
+    sector_return = sector_close.pct_change(RS_LOOKBACK)
+    result["sector_rs_spread"] = (symbol_return - sector_return).to_numpy() * 100
+
+    first = float(symbol_close.iloc[0]) if len(symbol_close) else float("nan")
+    sector_first = float(sector_close.iloc[0]) if len(sector_close) else float("nan")
+    if first and sector_first and first == first and sector_first == sector_first:
+        symbol_base = symbol_close / first
+        sector_base = sector_close / sector_first
+        result["sector_rs_line"] = (symbol_base / sector_base).to_numpy() * 100
+    else:
+        result["sector_rs_line"] = pd.NA
+
+    symbol_1m = symbol_close.pct_change(SECTOR_EXCESS_LOOKBACK)
+    sector_1m = sector_close.pct_change(SECTOR_EXCESS_LOOKBACK)
+    result["sector_excess_1m"] = (symbol_1m - sector_1m).to_numpy() * 100
+    return result
+
+
 def build_indicator_frame(
     df: pd.DataFrame,
     *,
     benchmark_df: pd.DataFrame | None = None,
     benchmark_symbol: str = "SPY",
+    sector_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     enriched = compute_indicators(
         df,
@@ -108,7 +155,10 @@ def build_indicator_frame(
         index=enriched.index,
     )
     for column in TECHNICAL_FEATURE_COLUMNS:
+        if column.startswith("sector_"):
+            continue
         result[column] = features[column].values
+    result = attach_sector_relative_features(result, sector_df)
     return result
 
 
@@ -117,12 +167,14 @@ def latest_feature_vector(
     *,
     benchmark_df: pd.DataFrame | None = None,
     benchmark_symbol: str = "SPY",
+    sector_df: pd.DataFrame | None = None,
     regime_row: dict[str, float | None] | None = None,
 ) -> tuple[dict[str, float | None], pd.DataFrame]:
     frame = build_indicator_frame(
         df,
         benchmark_df=benchmark_df,
         benchmark_symbol=benchmark_symbol,
+        sector_df=sector_df,
     )
     latest = frame.iloc[-1]
     snapshot = {

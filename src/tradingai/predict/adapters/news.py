@@ -37,6 +37,7 @@ def adapt_news_signal(ticker: str, payload: dict) -> AgentSignal:
         "event_score": event_score,
         "events": payload.get("events") or [],
         "propagated_sectors": payload.get("propagated_sectors") or {},
+        "related_candidates": payload.get("related_candidates") or [],
         "news_score_source": "events" if event_score is not None else "sentiment",
     }
 

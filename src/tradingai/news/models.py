@@ -65,6 +65,7 @@ class SentimentReport(BaseModel):
     propagated_sectors: dict[str, float] = Field(default_factory=dict)
     event_confidence: float | None = None
     event_reasons: list[str] = Field(default_factory=list)
+    related_candidates: list[dict] = Field(default_factory=list)
     as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_public_dict(self) -> dict:
@@ -81,6 +82,7 @@ class SentimentReport(BaseModel):
             "propagated_sectors": self.propagated_sectors,
             "event_confidence": self.event_confidence,
             "event_reasons": self.event_reasons,
+            "related_candidates": self.related_candidates,
         }
         if self.scoring_snapshot is not None:
             payload["scoring_snapshot"] = self.scoring_snapshot

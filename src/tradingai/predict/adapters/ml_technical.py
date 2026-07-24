@@ -13,6 +13,15 @@ def _ml_reasons(payload: dict) -> list[str]:
     probability_up = payload.get("probability_up")
     model = payload.get("model")
     horizon_days = payload.get("horizon_days")
+    label_mode = payload.get("label_mode") or "absolute"
+    if label_mode == "cross_section":
+        return [
+            (
+                f"L5 CS {model} model: {probability_up * 100:.1f}% chance of beating "
+                f"sector peers over {horizon_days} trading day(s) "
+                f"({payload.get('sector') or 'sector'}, source={payload.get('model_source')})."
+            )
+        ]
     return [
         (
             f"ML {model} model predicts {probability_up * 100:.1f}% probability up "
@@ -26,6 +35,11 @@ def adapt_ml_technical_signal(ticker: str, payload: dict) -> AgentSignal:
     probability_up = float(payload["probability_up"])
     bullish_score = (directional + 1.0) / 2.0
     confidence = 0.4 + 0.4 * abs(directional)
+    raw = {
+        **payload,
+        "ml_rank_score": payload.get("cs_prob", probability_up),
+        "label_mode": payload.get("label_mode") or "absolute",
+    }
 
     return AgentSignal(
         agent="technical",
@@ -35,7 +49,7 @@ def adapt_ml_technical_signal(ticker: str, payload: dict) -> AgentSignal:
         bearish_score=round(1.0 - bullish_score, 4),
         confidence=round(confidence, 4),
         reasons=_ml_reasons(payload),
-        raw=payload,
+        raw=raw,
     )
 
 

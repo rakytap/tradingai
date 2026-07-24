@@ -150,3 +150,17 @@ def get_segment_calibration_tool(horizon_days: int | None = None) -> dict:
         "horizon_days": horizon_days,
         "segments": get_segment_calibration(horizon_days),
     }
+
+
+def rank_sector_candidates_tool(
+    sector: str | None = None,
+    limit: int = 10,
+    horizon_days: int | None = None,
+) -> dict:
+    from tradingai.analysis.ml.ranking import rank_bullish_sector_candidates
+
+    return rank_bullish_sector_candidates(
+        sector=sector,
+        limit=limit,
+        horizon_days=horizon_days,
+    )

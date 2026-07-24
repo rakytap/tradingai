@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 import numpy as np
 
 from tradingai.analysis.ml.artifacts import save_artifact, save_manifest
-from tradingai.analysis.ml.config import TRAIN_FRACTION, get_ml_include_regime, get_model_dir
+from tradingai.analysis.ml.config import (
+    MIN_SECTOR_TICKERS,
+    TRAIN_FRACTION,
+    get_ml_include_regime,
+    get_ml_label_mode,
+    get_model_dir,
+)
 from tradingai.analysis.ml.dataset import (
     build_training_dataset,
     chronological_split,
@@ -15,10 +21,16 @@ from tradingai.analysis.ml.dataset import (
 from tradingai.analysis.ml.evaluation import evaluate_predictions, rank_models
 from tradingai.analysis.ml.features import get_feature_columns
 from tradingai.analysis.ml.registry import get_predictor, list_predictors
+from tradingai.analysis.ml.sector_models import (
+    save_sectors_index,
+    sector_model_dir,
+    sector_slug,
+)
 from tradingai.data.config import get_sync_tickers
 from tradingai.data.connection import initialize_schema
-from tradingai.data.repositories.stocks import list_tickers
+from tradingai.data.repositories.stocks import list_sectors, list_tickers, list_tickers_by_sector
 from tradingai.predict.config import get_prediction_horizons
+from tradingai.regime.sector_proxies import normalize_sector_label
 
 
 def _resolve_tickers(tickers: list[str] | None) -> list[str]:
@@ -46,50 +58,52 @@ def _resolve_models(models: list[str] | None) -> list[str]:
     return resolved
 
 
-def train_models(
+def _rank_ic(test_df, y_prob) -> float | None:
+    if test_df is None or test_df.empty or "cs_rank_pct" not in test_df.columns:
+        return None
+    try:
+        import pandas as pd
+
+        series_prob = pd.Series(y_prob, index=test_df.index)
+        corr = series_prob.corr(test_df["cs_rank_pct"].astype(float), method="spearman")
+        if corr != corr:
+            return None
+        return round(float(corr), 4)
+    except Exception:
+        return None
+
+
+def _train_one_universe(
     *,
-    tickers: list[str] | None = None,
-    horizons: tuple[int, ...] | None = None,
-    models: list[str] | None = None,
-    train_fraction: float = TRAIN_FRACTION,
-    dry_run: bool = False,
-    model_dir=None,
+    tickers: list[str],
+    horizons: tuple[int, ...],
+    model_names: list[str],
+    train_fraction: float,
+    dry_run: bool,
+    base_dir,
+    label_mode: str,
+    sector: str | None = None,
+    existing_results: dict | None = None,
 ) -> dict:
-    initialize_schema()
-    tickers = _resolve_tickers(tickers)
-    horizons = horizons or get_prediction_horizons()
-    model_names = _resolve_models(models)
-    base_dir = model_dir or get_model_dir()
-
-    from tradingai.analysis.ml.artifacts import load_manifest
-
-    existing_manifest = load_manifest(model_dir=base_dir) or {}
-
-    manifest = {
-        "trained_at": datetime.now(timezone.utc).isoformat(),
-        "tickers": tickers,
-        "horizons": list(horizons),
-        "models": list_predictors(),
-        "feature_columns": get_feature_columns(),
-        "include_regime": get_ml_include_regime(),
-        "results": dict(existing_manifest.get("results", {})),
-    }
-
+    results = dict(existing_results or {})
     for horizon_days in horizons:
-        dataset = build_training_dataset(tickers, horizon_days=horizon_days)
+        dataset = build_training_dataset(
+            tickers,
+            horizon_days=horizon_days,
+            label_mode=label_mode,
+        )
         if dataset.empty:
             raise ValueError(
-                f"No training rows for horizon {horizon_days}d. "
-                "Ensure daily_prices are synced and tickers have enough history."
+                f"No training rows for horizon {horizon_days}d"
+                + (f" sector={sector}" if sector else "")
+                + ". Ensure daily_prices are synced and tickers have enough history."
             )
 
         train_df, test_df = chronological_split(dataset, train_fraction=train_fraction)
-        X_train, y_train = split_features_labels(train_df)
-        X_test, y_test = split_features_labels(test_df)
+        X_train, y_train = split_features_labels(train_df, label_mode=label_mode)
+        X_test, y_test = split_features_labels(test_df, label_mode=label_mode)
 
-        prior_metrics = dict(
-            manifest.get("results", {}).get(str(horizon_days), {}).get("metrics", {})
-        )
+        prior_metrics = dict(results.get(str(horizon_days), {}).get("metrics", {}))
         horizon_metrics = {
             name: metrics for name, metrics in prior_metrics.items() if name not in model_names
         }
@@ -108,6 +122,9 @@ def train_models(
                 else:
                     y_prob = probabilities[:, -1]
                 metrics = evaluate_predictions(y_test.to_numpy(), y_prob)
+                ic = _rank_ic(test_df, y_prob)
+                if ic is not None:
+                    metrics["rank_ic"] = ic
 
             if not dry_run:
                 save_artifact(
@@ -118,16 +135,152 @@ def train_models(
                 )
             horizon_metrics[model_name] = metrics
 
-        manifest["results"][str(horizon_days)] = {
+        results[str(horizon_days)] = {
             "train_rows": len(train_df),
             "test_rows": len(test_df),
             "metrics": horizon_metrics,
             "ranked": rank_models(horizon_metrics),
+            "label_mode": label_mode,
+            "sector": sector,
         }
+    return results
+
+
+def train_models(
+    *,
+    tickers: list[str] | None = None,
+    horizons: tuple[int, ...] | None = None,
+    models: list[str] | None = None,
+    train_fraction: float = TRAIN_FRACTION,
+    dry_run: bool = False,
+    model_dir=None,
+    label_mode: str | None = None,
+) -> dict:
+    initialize_schema()
+    tickers = _resolve_tickers(tickers)
+    horizons = horizons or get_prediction_horizons()
+    model_names = _resolve_models(models)
+    base_dir = model_dir or get_model_dir()
+    mode = label_mode or get_ml_label_mode()
+
+    from tradingai.analysis.ml.artifacts import load_manifest
+
+    existing_manifest = load_manifest(model_dir=base_dir) or {}
+
+    results = _train_one_universe(
+        tickers=tickers,
+        horizons=horizons,
+        model_names=model_names,
+        train_fraction=train_fraction,
+        dry_run=dry_run,
+        base_dir=base_dir,
+        label_mode=mode,
+        existing_results=dict(existing_manifest.get("results", {})),
+    )
+
+    manifest = {
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "tickers": tickers,
+        "horizons": list(horizons),
+        "models": list_predictors(),
+        "feature_columns": get_feature_columns(),
+        "include_regime": get_ml_include_regime(),
+        "label_mode": mode,
+        "results": results,
+    }
 
     if not dry_run:
         save_manifest(manifest, model_dir=base_dir)
     return manifest
+
+
+def train_models_by_sector(
+    *,
+    sectors: list[str] | None = None,
+    horizons: tuple[int, ...] | None = None,
+    models: list[str] | None = None,
+    train_fraction: float = TRAIN_FRACTION,
+    dry_run: bool = False,
+    model_dir=None,
+    label_mode: str | None = None,
+    min_sector_tickers: int = MIN_SECTOR_TICKERS,
+) -> dict:
+    initialize_schema()
+    horizons = horizons or get_prediction_horizons()
+    model_names = _resolve_models(models)
+    base_dir = model_dir or get_model_dir()
+    mode = label_mode or get_ml_label_mode()
+
+    available = sectors or list_sectors(exclude_etf=True)
+    sector_summaries: dict[str, dict] = {}
+    skipped: list[dict] = []
+
+    for sector in available:
+        canonical = normalize_sector_label(sector) or sector
+        tickers = list_tickers_by_sector(sector, exclude_etf=True)
+        if len(tickers) < min_sector_tickers:
+            skipped.append(
+                {
+                    "sector": canonical,
+                    "ticker_count": len(tickers),
+                    "reason": f"fewer than {min_sector_tickers} tickers",
+                }
+            )
+            continue
+
+        sector_dir = sector_model_dir(canonical, model_dir=base_dir)
+        try:
+            results = _train_one_universe(
+                tickers=tickers,
+                horizons=horizons,
+                model_names=model_names,
+                train_fraction=train_fraction,
+                dry_run=dry_run,
+                base_dir=sector_dir,
+                label_mode=mode,
+                sector=canonical,
+            )
+        except ValueError as exc:
+            skipped.append({"sector": canonical, "ticker_count": len(tickers), "reason": str(exc)})
+            continue
+
+        manifest = {
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "sector": canonical,
+            "sector_slug": sector_slug(canonical),
+            "tickers": tickers,
+            "horizons": list(horizons),
+            "models": list_predictors(),
+            "feature_columns": get_feature_columns(),
+            "include_regime": get_ml_include_regime(),
+            "label_mode": mode,
+            "results": results,
+        }
+        if not dry_run:
+            save_manifest(manifest, model_dir=sector_dir)
+        sector_summaries[canonical] = {
+            "slug": sector_slug(canonical),
+            "ticker_count": len(tickers),
+            "path": str(sector_dir),
+            "results": {
+                key: {
+                    "train_rows": payload.get("train_rows"),
+                    "test_rows": payload.get("test_rows"),
+                    "ranked": payload.get("ranked"),
+                }
+                for key, payload in results.items()
+            },
+        }
+
+    index = {
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "label_mode": mode,
+        "sectors": sector_summaries,
+        "skipped": skipped,
+    }
+    if not dry_run:
+        save_sectors_index(index, model_dir=base_dir)
+    return index
 
 
 def compare_models_from_manifest(*, model_dir=None, horizon_days: int | None = None) -> dict:
@@ -164,6 +317,27 @@ def compare_models_from_manifest(*, model_dir=None, horizon_days: int | None = N
 
 
 def _print_manifest_summary(manifest: dict) -> None:
+    if "sectors" in manifest:
+        print(f"\nlabel_mode={manifest.get('label_mode')} sectors={len(manifest['sectors'])}")
+        for sector, payload in manifest["sectors"].items():
+            print(f"\nSector {sector} ({payload['ticker_count']} tickers) → {payload['path']}")
+            for horizon_key, horizon_payload in payload.get("results", {}).items():
+                print(
+                    f"  Horizon {horizon_key}d — "
+                    f"train={horizon_payload.get('train_rows')} "
+                    f"test={horizon_payload.get('test_rows')}"
+                )
+                for item in horizon_payload.get("ranked") or []:
+                    print(
+                        f"    #{item['rank']} {item['model']}: "
+                        f"accuracy={item.get('accuracy')} brier={item.get('brier_score')}"
+                    )
+        if manifest.get("skipped"):
+            print("\nSkipped:")
+            for item in manifest["skipped"]:
+                print(f"  {item['sector']}: {item['reason']}")
+        return
+
     for horizon_key, payload in manifest.get("results", {}).items():
         print(f"\nHorizon {horizon_key}d — train={payload['train_rows']} test={payload['test_rows']}")
         for item in payload["ranked"]:
@@ -184,21 +358,55 @@ def main() -> None:
         help="Train only this model (repeatable, or comma-separated). "
         "Choices: baseline, logistic, random_forest, xgboost.",
     )
+    parser.add_argument(
+        "--by-sector",
+        action="store_true",
+        help="Train one model set per stocks.sector under sectors/<slug>/.",
+    )
+    parser.add_argument(
+        "--cross-section",
+        action="store_true",
+        help="Use within-sector-date relative labels (above peer median).",
+    )
+    parser.add_argument(
+        "--absolute",
+        action="store_true",
+        help="Use absolute forward-return direction labels.",
+    )
+    parser.add_argument("--sector", action="append", help="Limit --by-sector to these sectors.")
     parser.add_argument("--dry-run", action="store_true", help="Train/evaluate without saving artifacts.")
     args = parser.parse_args()
 
+    if args.cross_section and args.absolute:
+        raise SystemExit("Use only one of --cross-section or --absolute.")
+    label_mode = None
+    if args.cross_section:
+        label_mode = "cross_section"
+    elif args.absolute:
+        label_mode = "absolute"
+
     horizons = (args.horizon,) if args.horizon else None
-    manifest = train_models(
-        tickers=args.tickers,
-        horizons=horizons,
-        models=args.model,
-        dry_run=args.dry_run,
-    )
+    if args.by_sector:
+        manifest = train_models_by_sector(
+            sectors=args.sector,
+            horizons=horizons,
+            models=args.model,
+            dry_run=args.dry_run,
+            label_mode=label_mode,
+        )
+    else:
+        manifest = train_models(
+            tickers=args.tickers,
+            horizons=horizons,
+            models=args.model,
+            dry_run=args.dry_run,
+            label_mode=label_mode,
+        )
     _print_manifest_summary(manifest)
     if args.dry_run:
         print("\nDry run complete — no artifacts written.")
     else:
-        print(f"\nArtifacts saved to {get_model_dir()}")
+        print(f"\nArtifacts saved under {get_model_dir()}")
 
 
 if __name__ == "__main__":

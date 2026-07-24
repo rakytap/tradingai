@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from tradingai.analysis.ml.config import is_l5_ranking_enabled
 from tradingai.data.connection import get_connection
 from tradingai.data.etf_symbols import is_etf
 from tradingai.predict.config import get_ml_horizon_days
@@ -29,7 +30,8 @@ def _latest_predictions_per_ticker(
                    expected_return_pct, confidence, combined_score,
                    sector, regime, prediction_type,
                    technical_score, news_score, regime_score,
-                   model_name, actual_return_pct, direction_correct
+                   model_name, actual_return_pct, direction_correct,
+                   ml_rank_score, sector_rank
             FROM predictions
             WHERE horizon_days = %s
             ORDER BY ticker, timestamp DESC
@@ -48,6 +50,16 @@ def _sector_key(row: dict) -> str | None:
     return str(sector).strip()
 
 
+def _rank_key(row: dict) -> float:
+    ml_rank = row.get("ml_rank_score")
+    if ml_rank is not None:
+        try:
+            return float(ml_rank)
+        except (TypeError, ValueError):
+            pass
+    return float(row["combined_score"])
+
+
 def select_portfolio_positions(
     candidates: list[dict],
     *,
@@ -56,14 +68,21 @@ def select_portfolio_positions(
     min_probability_up: float = DEFAULT_MIN_PROBABILITY_UP,
     max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
     max_broad_etf: int = DEFAULT_MAX_BROAD_ETF,
+    require_bullish_sector: bool = False,
 ) -> list[dict]:
-    filtered = [
-        row
-        for row in candidates
-        if float(row["combined_score"]) > min_combined_score
-        and float(row["probability_up"]) >= min_probability_up
-    ]
-    ranked = sorted(filtered, key=lambda row: float(row["combined_score"]), reverse=True)
+    filtered = []
+    for row in candidates:
+        if float(row["combined_score"]) <= min_combined_score:
+            continue
+        if float(row["probability_up"]) < min_probability_up:
+            continue
+        if require_bullish_sector:
+            regime = str(row.get("regime") or "").lower()
+            if regime != "bullish":
+                continue
+        filtered.append(row)
+
+    ranked = sorted(filtered, key=lambda row: _rank_key(row), reverse=True)
 
     stocks = [row for row in ranked if not is_etf(str(row["ticker"]))]
     etfs = [row for row in ranked if is_etf(str(row["ticker"]))]
@@ -116,7 +135,7 @@ def _score_weights(rows: list[dict], *, invested_fraction: float) -> list[dict]:
     if not rows:
         return []
 
-    scores = [max(float(row["combined_score"]), 0.01) for row in rows]
+    scores = [max(_rank_key(row), 0.01) for row in rows]
     total = sum(scores)
     positions = []
     for row, score in zip(rows, scores):
@@ -127,6 +146,12 @@ def _score_weights(rows: list[dict], *, invested_fraction: float) -> list[dict]:
                 "weight": round(weight, 4),
                 "weight_pct": round(weight * 100, 2),
                 "combined_score": round(float(row["combined_score"]), 4),
+                "ml_rank_score": (
+                    round(float(row["ml_rank_score"]), 4)
+                    if row.get("ml_rank_score") is not None
+                    else None
+                ),
+                "sector_rank": row.get("sector_rank"),
                 "probability_up": round(float(row["probability_up"]), 4),
                 "expected_return_pct": round(float(row["expected_return_pct"]), 4),
                 "confidence": round(float(row["confidence"]), 4),
@@ -154,8 +179,14 @@ def build_paper_portfolio(
     min_probability_up: float = DEFAULT_MIN_PROBABILITY_UP,
     notional_usd: float | None = 100_000.0,
     database_url: str | None = None,
+    require_bullish_sector: bool | None = None,
+    **_ignored,
 ) -> dict:
+    """Build paper portfolio. Extra kwargs (optimizer, etc.) are ignored for compatibility."""
     horizon = horizon_days if horizon_days is not None else get_ml_horizon_days()
+    bullish_gate = (
+        is_l5_ranking_enabled() if require_bullish_sector is None else require_bullish_sector
+    )
     candidates = _latest_predictions_per_ticker(
         horizon_days=horizon,
         database_url=database_url,
@@ -165,18 +196,18 @@ def build_paper_portfolio(
             f"No stored predictions for horizon {horizon}d. "
             "Run tradingai-predict-batch first."
         )
-    print("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk ", positions)
     selected = select_portfolio_positions(
         candidates,
         size=positions,
         min_combined_score=min_combined_score,
         min_probability_up=min_probability_up,
+        require_bullish_sector=bullish_gate,
     )
-    print("selected ", len(selected))
     if not selected:
         raise ValueError(
             "No candidates passed portfolio filters. "
-            f"Try lowering min_probability_up (current {min_probability_up})."
+            f"Try lowering min_probability_up (current {min_probability_up})"
+            + (" or disabling L5 bullish-sector gate." if bullish_gate else ".")
         )
 
     invested_fraction = max(0.0, min(1.0, 1.0 - cash_weight))
@@ -202,6 +233,8 @@ def build_paper_portfolio(
             "max_broad_market_etf": DEFAULT_MAX_BROAD_ETF,
             "positions": positions,
             "cash_weight": cash_weight,
+            "require_bullish_sector": bullish_gate,
+            "rank_key": "ml_rank_score|combined_score",
         },
         "notional_usd": notional_usd,
         "cash_weight": cash_weight,

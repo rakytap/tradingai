@@ -1,0 +1,199 @@
+# TradingAI workflow: data → predictions → portfolio
+
+End-to-end manual for the current stack: sync jobs, L1–L5 layers, fusion predictions, and paper portfolios.
+
+## Overview
+
+```mermaid
+flowchart TD
+  sync[Sync stocks prices news regime KG] --> train[Train sector CS models]
+  train --> predict[Generate fused predictions]
+  predict --> rank[L5 rank / paper portfolio]
+  rank --> eval[Evaluate outcomes]
+  eval --> train
+```
+
+**Mental model**
+
+| Layer | Role |
+|-------|------|
+| **L1 / L4** | Market factors + sector board: which sectors are tradable (`bullish` / `neutral` / `bearish`) |
+| **L2** | News as typed events → ontology → sector exposure (news agent score) |
+| **L3** | Static ticker graph → related candidates (informational; not fusion score yet) |
+| **L5** | Cross-sectional ML: who wins *inside* a bullish sector |
+| **Fusion** | Weighted technical + news + regime → stored multi-horizon probabilities |
+
+L4 chooses the playground; L5 ranks names inside it; fusion still blends tech/news/regime into stored scores.
+
+---
+
+## 1. Collect and store data
+
+Watchlist comes from `TRADINGAI_SYNC_TICKERS` in `.env`.
+
+| Step | Command | Writes |
+|------|---------|--------|
+| Universe metadata | `tradingai-sync-stocks` | `stocks` (sector, industry, market cap) |
+| Prices | `tradingai-sync-prices` | `daily_prices` (equities + macros SPY/VIX/HYG/LQD, sector ETFs) |
+| Regime board | `tradingai-sync-regime` | `regime_snapshots` (L1 factors + L4 sector stances) |
+| News | `tradingai-sync-news` | `news_events` + L2 `news_graph_events` |
+| Entity graph | `tradingai-sync-ticker-kg` | `ticker_kg_nodes` (static L3 DB mirror) |
+
+**Suggested cadence:** prices daily; stocks/news weekly; regime when you want a fresh board.
+
+```bash
+tradingai-sync-stocks
+tradingai-sync-prices
+tradingai-sync-regime
+tradingai-sync-news
+tradingai-sync-ticker-kg
+```
+
+---
+
+## 2. Train the ML job (L5)
+
+Primary training path is **per-sector cross-sectional** models (not global absolute direction):
+
+```bash
+tradingai-train-models --by-sector --cross-section --horizon 5
+```
+
+What this does:
+
+- Features from prices: technical indicators, SPY relative strength, **sector ETF relative strength**, optional regime features.
+- Labels = **above same-date sector peer median** (`cs_label`), not absolute up/down.
+- Artifacts under `data/models/sectors/<slug>/horizon_N/` (see `TRADINGAI_ML_MODEL_DIR`).
+
+Relevant env (see `.env.example`):
+
+```text
+TRADINGAI_ML_LABEL_MODE=cross_section
+TRADINGAI_ML_ALLOW_GLOBAL_FALLBACK=false
+TRADINGAI_L5_RANKING=true
+TRADINGAI_PREDICT_BACKEND=ml    # optional: fusion technical agent uses CS models
+```
+
+After changing feature schema (regime columns, sector RS, etc.), retrain — old artifacts will not match.
+
+---
+
+## 3. Generate predictions (per ticker)
+
+Via MCP `generate_prediction` or batch:
+
+```bash
+tradingai-predict-batch
+tradingai-predict-batch --bullish-sectors-only   # L5 universe only
+```
+
+```mermaid
+flowchart TD
+  ticker[Ticker] --> tech[Technical agent]
+  ticker --> news[News agent]
+  ticker --> reg[Regime agent]
+  tech --> fuse[Weighted fusion]
+  news --> fuse
+  reg --> fuse
+  fuse --> pred[(predictions table)]
+```
+
+### Technical agent
+
+- Rule-based indicators, **or**
+- ML (`TRADINGAI_PREDICT_BACKEND=ml`): load sector CS artifact → `cs_prob` → directional score; persisted as `ml_rank_score` when present.
+
+### News agent (L2 + L3)
+
+- Headlines/filings → typed events → theme ontology → sector exposure → news `directional_score`.
+- Scalar sentiment stays in `raw` (fallback if no events match).
+- L3 attaches `related_candidates` (e.g. MSFT AI capex → SMH / utilities / grid) for inspection; **does not** change the news score in this step.
+
+MCP helpers: `analyze_news_sentiment`, `get_news_events`, `get_ticker_graph`, `get_related_tickers`.
+
+### Regime agent (L1 / L4)
+
+- Live (or synced) board: ticker’s sector stance → soft regime score in fusion (`bullish` / `neutral` / `bearish`).
+
+MCP: `get_regime_state`.
+
+### Fusion
+
+- Weighted sum (tuned file `data/fusion_weights.json` or `TRADINGAI_PREDICT_WEIGHTS`).
+- Multi-horizon outputs (`TRADINGAI_PREDICT_HORIZONS`, default 3 / 5 / 8).
+- Rows written to `predictions` (scores, sector, regime, optional `ml_rank_score` / `sector_rank`).
+
+---
+
+## 4. Rank and build portfolio (L5 surface)
+
+### Live ranking
+
+MCP `rank_sector_candidates`:
+
+- Eligible sectors = L4 `stance == bullish` (or pass one `sector`).
+- Score peers with CS models → ranked candidates by `ml_score`.
+
+```
+Use tradingai-predict to rank_sector_candidates.
+Use tradingai-predict to rank_sector_candidates for Technology.
+```
+
+### Paper portfolio
+
+```bash
+tradingai-paper-portfolio
+# or MCP get_paper_portfolio
+```
+
+Flow:
+
+1. Load latest prediction per ticker for the horizon (`TRADINGAI_ML_HORIZON`).
+2. If `TRADINGAI_L5_RANKING=true`, keep **bullish-sector** rows only.
+3. Sort by `ml_rank_score` when present, else `combined_score`.
+4. Apply filters (`min_probability_up`, `max_per_sector`, broad-ETF caps).
+5. Assign weights + cash buffer → `data/paper_portfolio.json` (and CSV).
+
+---
+
+## 5. Learn from outcomes
+
+```bash
+tradingai-sync-prices && tradingai-predict-eval
+```
+
+After horizons mature (3 / 5 / 8 trading days):
+
+- Backfills `actual_return_pct` / `direction_correct` on `predictions`.
+- Enables track record, segment calibration, and fusion weight tuning (`tradingai-tune-fusion`).
+
+---
+
+## One-line ops loop
+
+Sync stocks / prices / news / regime / ticker-kg → train sector CS models → batch predict (bullish-only optional) → paper portfolio from ranked bullish names → evaluate after horizons mature → retrain / retune as needed.
+
+---
+
+## Quick command cheat sheet
+
+```bash
+# Data
+tradingai-sync-stocks
+tradingai-sync-prices
+tradingai-sync-regime
+tradingai-sync-news
+tradingai-sync-ticker-kg
+
+# Models
+tradingai-train-models --by-sector --cross-section --horizon 5
+
+# Predict + portfolio
+tradingai-predict-batch --bullish-sectors-only
+tradingai-paper-portfolio
+
+# Evaluate
+tradingai-sync-prices && tradingai-predict-eval
+```
+
+For MCP tool lists and setup, see [README.md](README.md).

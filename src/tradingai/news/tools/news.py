@@ -305,4 +305,43 @@ def get_news_events(ticker: str, limit: int = 20) -> dict:
         "stored_events": stored,
         "sentiment": live.get("sentiment"),
         "news_score_source": "events" if live.get("event_score") is not None else "sentiment",
+        "related_candidates": live.get("related_candidates") or [],
+    }
+
+
+def get_ticker_graph(ticker: str) -> dict:
+    """Return the static L3 knowledge-graph node and one-hop neighbors."""
+    from tradingai.news.analysis.related_candidates import ticker_graph_view
+
+    return ticker_graph_view(ticker)
+
+
+def get_related_tickers(ticker: str, limit: int = 12) -> dict:
+    """Expand L2 events through the L3 entity graph into related candidates."""
+    from tradingai.news.analysis.related_candidates import resolve_related_candidates
+    from tradingai.news.entity_graph import get_node
+
+    live = analyze_news_sentiment(ticker)
+    events = live.get("events") or []
+    candidates = live.get("related_candidates") or resolve_related_candidates(
+        ticker,
+        events=events,
+        limit=limit,
+    )
+    node = get_node(ticker)
+    return {
+        "ticker": ticker.upper(),
+        "in_graph": node is not None,
+        "event_types": [e.get("event_type") for e in events if isinstance(e, dict)],
+        "themes": sorted(
+            {
+                theme
+                for e in events
+                if isinstance(e, dict)
+                for theme in (e.get("themes") or [])
+            }
+        ),
+        "related_candidates": candidates[:limit],
+        "event_score": live.get("event_score"),
+        "news_score_unchanged": True,
     }

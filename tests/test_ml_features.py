@@ -77,8 +77,10 @@ def test_latest_feature_vector_returns_complete_snapshot(monkeypatch: pytest.Mon
         _sample_ohlcv(),
         benchmark_df=_sample_benchmark(),
         benchmark_symbol="SPY",
+        sector_df=_sample_benchmark(),
     )
     assert set(snapshot.keys()) == set(get_feature_columns())
     assert len(frame) == 300
     assert snapshot["rsi"] is not None
     assert snapshot["regime_score"] == 0.8
+    assert snapshot["sector_rs_spread"] is not None

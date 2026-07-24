@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from tradingai.news.analysis.catalyst_extractor import extract_catalysts, extract_risk_factors
 from tradingai.news.analysis.events import extract_news_events, score_events_for_ticker
+from tradingai.news.analysis.related_candidates import resolve_related_candidates
 from tradingai.news.analysis.sentiment_scorer import (
     aggregate_sentiment,
     compute_confidence,
@@ -172,6 +173,11 @@ def synthesize_sentiment_report(
     except Exception:
         sector = None
     event_payload = score_events_for_ticker(events, sector=sector)
+    related_candidates = resolve_related_candidates(
+        ticker,
+        events=events,
+        limit=12,
+    )
 
     return SentimentReport(
         ticker=ticker.upper(),
@@ -186,4 +192,5 @@ def synthesize_sentiment_report(
         propagated_sectors=event_payload.get("propagated_sectors") or {},
         event_confidence=event_payload.get("confidence"),
         event_reasons=event_payload.get("reasons") or [],
+        related_candidates=related_candidates,
     )

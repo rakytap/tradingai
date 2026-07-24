@@ -8,6 +8,8 @@ A Python MCP server suite for Cursor that combines technical analysis, news/sent
 
 This section explains how to set up and use the environment end to end: what each step does, why it matters, and where data is stored.
 
+For the condensed **data → train → predict → portfolio** ops loop (L1–L5), see [docs/WORKFLOW.md](docs/WORKFLOW.md).
+
 ### What this environment does
 
 The project runs **four separate MCP servers** that Cursor can call as tools:
@@ -253,7 +255,8 @@ tradingai-sync-news
 | `tradingai-sync-stocks` | Fetches sector, industry, market cap from yfinance | `stocks` |
 | `tradingai-sync-prices` | Downloads ~2 years of OHLCV, then incremental updates | `daily_prices` |
 | `tradingai-sync-regime` | Builds structured L1/L4 regime state and persists snapshot | `regime_snapshots` |
-| `tradingai-sync-news` | Fetches headlines and catalyst tags per watchlist ticker | `news_events` |
+| `tradingai-sync-news` | Fetches headlines and catalyst tags per watchlist ticker | `news_events` / `news_graph_events` |
+| `tradingai-sync-ticker-kg` | Upserts curated L3 entity graph into Postgres | `ticker_kg_nodes` |
 
 **Tickers synced:** Defined by `TRADINGAI_SYNC_TICKERS` in `.env` (default: `AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY`).
 
@@ -332,6 +335,20 @@ After enabling or changing regime features, re-run `tradingai-train-models` — 
 
 Artifacts are saved under `TRADINGAI_ML_MODEL_DIR` (default `./data/models`) with a `manifest.json` metrics summary.
 
+**L5 cross-sectional ranking (primary ML job):** L4’s sector board picks *which* sectors are tradable (`bullish`). ML answers *who wins inside that sector* — labels are **above sector-date peer median** (`TRADINGAI_ML_LABEL_MODE=cross_section`), not absolute “will this name go up.” Train per sector:
+
+```bash
+tradingai-train-models --by-sector --cross-section --horizon 5
+```
+
+Artifacts land in `data/models/sectors/<slug>/horizon_{N}/`. Inference prefers the sector model (`TRADINGAI_ML_ALLOW_GLOBAL_FALLBACK=false` by default). Paper portfolio with `TRADINGAI_L5_RANKING=true` keeps only bullish-sector predictions and sorts by `ml_rank_score` when present.
+
+```
+Use tradingai-predict to rank_sector_candidates (bullish sectors).
+Use tradingai-predict to rank_sector_candidates for Technology.
+tradingai-predict-batch --bullish-sectors-only
+```
+
 ### News and sentiment (`tradingai-news`)
 
 ```
@@ -347,7 +364,18 @@ tradingai-sync-news    # also writes news_graph_events alongside legacy news_eve
 
 MCP `get_news_events` returns live extracted events, propagated sector exposures, and recent DB rows.
 
-**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** `news_events` + `news_graph_events` when synced / predict fetch persists.
+**L3 static knowledge graph** (curated, not scraped): ticker → peers / suppliers / customers / thematic proxies (SMH, XLU, …), commodities, and rate/FX flags live in `src/tradingai/news/entity_graph.py`. L2 event themes expand to **related candidates** (e.g. MSFT AI capex → SMH / utilities / grid). Candidates are attached on news `raw` for debugging; fusion news `directional_score` is unchanged until a later gating step. Neo4j / live supply-chain scrape are out of scope.
+
+```bash
+tradingai-sync-ticker-kg    # upsert ENTITY_GRAPH into ticker_kg_nodes
+```
+
+```
+Use tradingai-news to get_ticker_graph for MSFT.
+Use tradingai-news to get_related_tickers for MSFT.
+```
+
+**Data source:** yfinance headlines, SEC EDGAR, RSS. **Storage:** `news_events` + `news_graph_events` when synced / predict fetch persists; `ticker_kg_nodes` when `tradingai-sync-ticker-kg` is run.
 
 ### Market regime (`tradingai-regime`)
 
@@ -365,9 +393,9 @@ Structured **L1/L4 regime state** (deterministic, no LLM):
 tradingai-sync-regime    # build state, print board, persist to regime_snapshots
 ```
 
-MCP `get_regime_state` returns the full payload; pass `persist=true` to write a DB snapshot. Fusion uses each ticker’s **sector board stance** as the regime agent score (falls back to market equity trend when sector is unknown/ETF). Sector board remains price-based; news event sector exposures live on the news agent until a later merge step.
+MCP `get_regime_state` returns the full payload; pass `persist=true` to write a DB snapshot. Fusion uses each ticker’s **sector board stance** as the regime agent score (falls back to market equity trend when sector is unknown/ETF). Sector board remains price-based; news event sector exposures live on the news agent until a later merge step. L5 ranking **gates** the paper portfolio / `rank_sector_candidates` universe to L4 `bullish` sectors.
 
-LLM narratives and sector gating of predictions are **out of scope** for this step.
+LLM narratives are **out of scope** for this step.
 
 **Data source:** VIX, SPY, sector ETFs (XLK…XLC), optional FRED. **Storage:** `regime_snapshots` when synced / persisted.
 
