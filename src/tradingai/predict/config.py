@@ -12,6 +12,16 @@ load_dotenv()
 DEFAULT_WEIGHTS = (0.45, 0.35, 0.20)
 DEFAULT_HORIZONS = (3, 5, 8)
 DEFAULT_FUSION_TUNING_PATH = Path("./data/fusion_weights.json")
+DEFAULT_PORTFOLIO_RANK_KEY = "combined_score"
+_PORTFOLIO_RANK_KEY_ALIASES = {
+    "combined_score": "combined_score",
+    "combined": "combined_score",
+    "fusion": "combined_score",
+    "ml_rank_score": "ml_rank_score",
+    "ml_rank": "ml_rank_score",
+    "cs": "ml_rank_score",
+    "cs_prob": "ml_rank_score",
+}
 
 HORIZON_SCALES = {
     3: 1.1,
@@ -134,6 +144,13 @@ def get_horizon_scales() -> dict[int, float]:
     return scales
 
 
+@lru_cache
+def get_portfolio_rank_key() -> str:
+    raw = os.getenv("TRADINGAI_PORTFOLIO_RANK_KEY", DEFAULT_PORTFOLIO_RANK_KEY)
+    normalized = raw.strip().lower().replace("-", "_")
+    return _PORTFOLIO_RANK_KEY_ALIASES.get(normalized, DEFAULT_PORTFOLIO_RANK_KEY)
+
+
 def clear_fusion_config_cache() -> None:
     get_predict_backend.cache_clear()
     get_ml_model_name.cache_clear()
@@ -143,6 +160,7 @@ def clear_fusion_config_cache() -> None:
     load_fusion_tuning.cache_clear()
     get_fusion_weights.cache_clear()
     get_horizon_scales.cache_clear()
+    get_portfolio_rank_key.cache_clear()
 
 
 @lru_cache

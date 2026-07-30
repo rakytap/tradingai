@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from tradingai.analysis.ml.config import is_l5_ranking_enabled
 from tradingai.data.connection import get_connection
 from tradingai.data.etf_symbols import is_etf
-from tradingai.predict.config import get_ml_horizon_days
+from tradingai.predict.config import get_ml_horizon_days, get_portfolio_rank_key
 
 BROAD_MARKET_ETFS = frozenset({"SPY", "VOO", "IVV", "VTI", "QQQ", "DIA", "IWM", "RSP"})
 DEFAULT_POSITIONS = 10
@@ -51,12 +51,15 @@ def _sector_key(row: dict) -> str | None:
 
 
 def _rank_key(row: dict) -> float:
-    ml_rank = row.get("ml_rank_score")
-    if ml_rank is not None:
-        try:
-            return float(ml_rank)
-        except (TypeError, ValueError):
-            pass
+    key = get_portfolio_rank_key()
+    if key == "ml_rank_score":
+        ml_rank = row.get("ml_rank_score")
+        if ml_rank is not None:
+            try:
+                return float(ml_rank)
+            except (TypeError, ValueError):
+                pass
+        return float(row["combined_score"])
     return float(row["combined_score"])
 
 
@@ -234,7 +237,7 @@ def build_paper_portfolio(
             "positions": positions,
             "cash_weight": cash_weight,
             "require_bullish_sector": bullish_gate,
-            "rank_key": "ml_rank_score|combined_score",
+            "rank_key": get_portfolio_rank_key(),
         },
         "notional_usd": notional_usd,
         "cash_weight": cash_weight,

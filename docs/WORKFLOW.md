@@ -161,8 +161,8 @@ tradingai-paper-portfolio
 Flow:
 
 1. Load latest prediction per ticker for the horizon (`TRADINGAI_ML_HORIZON`).
-2. If `TRADINGAI_L5_RANKING=true`, keep **bullish-sector** rows only.
-3. Sort by `ml_rank_score` when present, else `combined_score`.
+2. If `TRADINGAI_L5_RANKING=true`, keep **bullish-sector** rows only (gate unchanged by rank key).
+3. Sort/weight by `TRADINGAI_PORTFOLIO_RANK_KEY` (`combined_score` default, or `ml_rank_score`); falls back to the other field when missing.
 4. Apply filters (`min_probability_up`, `max_per_sector`, broad-ETF caps).
 5. Assign weights + cash buffer → `data/paper_portfolio.json` (and CSV).
 

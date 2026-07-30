@@ -5,6 +5,7 @@ import pandas as pd
 from tradingai.analysis.ml.features import TECHNICAL_FEATURE_COLUMNS, attach_sector_relative_features
 from tradingai.analysis.ml.labels import add_cross_section_label, add_direction_label
 from tradingai.analysis.ml.sector_models import resolve_model_dir_for_sector, sector_model_dir, sector_slug
+from tradingai.predict.config import clear_fusion_config_cache
 from tradingai.predict.portfolio import select_portfolio_positions
 
 
@@ -117,8 +118,8 @@ def test_portfolio_bullish_gate_drops_bearish():
     assert [row["ticker"] for row in selected] == ["AAPL"]
 
 
-def test_portfolio_prefers_ml_rank_score():
-    candidates = [
+def _ml_vs_combined_candidates():
+    return [
         {
             "ticker": "LOW_CS",
             "combined_score": 0.9,
@@ -136,15 +137,40 @@ def test_portfolio_prefers_ml_rank_score():
             "ml_rank_score": 0.9,
         },
     ]
-    selected = select_portfolio_positions(
-        candidates,
-        size=2,
-        min_combined_score=-1.0,
-        min_probability_up=0.5,
-        require_bullish_sector=True,
-        max_per_sector=10,
-    )
-    assert selected[0]["ticker"] == "HIGH_CS"
+
+
+def test_portfolio_prefers_ml_rank_score(monkeypatch):
+    monkeypatch.setenv("TRADINGAI_PORTFOLIO_RANK_KEY", "ml_rank_score")
+    clear_fusion_config_cache()
+    try:
+        selected = select_portfolio_positions(
+            _ml_vs_combined_candidates(),
+            size=2,
+            min_combined_score=-1.0,
+            min_probability_up=0.5,
+            require_bullish_sector=True,
+            max_per_sector=10,
+        )
+        assert selected[0]["ticker"] == "HIGH_CS"
+    finally:
+        clear_fusion_config_cache()
+
+
+def test_portfolio_prefers_combined_score(monkeypatch):
+    monkeypatch.setenv("TRADINGAI_PORTFOLIO_RANK_KEY", "combined_score")
+    clear_fusion_config_cache()
+    try:
+        selected = select_portfolio_positions(
+            _ml_vs_combined_candidates(),
+            size=2,
+            min_combined_score=-1.0,
+            min_probability_up=0.5,
+            require_bullish_sector=True,
+            max_per_sector=10,
+        )
+        assert selected[0]["ticker"] == "LOW_CS"
+    finally:
+        clear_fusion_config_cache()
 
 
 def test_direction_label_still_absolute():

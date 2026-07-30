@@ -117,6 +117,7 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_REGIME_PROVIDERS` | Macro data: `yfinance`, optional `fred` |
 | `FRED_API_KEY` | Optional — enriches yield curve, inflation, credit spreads |
 | `TRADINGAI_PREDICT_WEIGHTS` | Fusion weights: technical, news, regime (default `0.45,0.35,0.20`; overridden by tuned file when enabled) |
+| `TRADINGAI_PORTFOLIO_RANK_KEY` | Paper portfolio sort/weight field: `combined_score` (default) or `ml_rank_score` |
 | `TRADINGAI_PREDICT_HORIZONS` | Prediction horizons in trading days (default `3,5,8`) |
 | `TRADINGAI_FUSION_TUNING_PATH` | Path to offline-tuned fusion weights JSON (default `./data/fusion_weights.json`) |
 | `TRADINGAI_FUSION_TUNING_ENABLED` | Load tuned fusion weights/scales from file when `1` (default); set `0` to use env defaults only |
@@ -343,7 +344,7 @@ Artifacts are saved under `TRADINGAI_ML_MODEL_DIR` (default `./data/models`) wit
 tradingai-train-models --by-sector --cross-section --horizon 5
 ```
 
-Artifacts land in `data/models/sectors/<slug>/horizon_{N}/`. Inference prefers the sector model (`TRADINGAI_ML_ALLOW_GLOBAL_FALLBACK=false` by default). Paper portfolio with `TRADINGAI_L5_RANKING=true` keeps only bullish-sector predictions and sorts by `ml_rank_score` when present.
+Artifacts land in `data/models/sectors/<slug>/horizon_{N}/`. Inference prefers the sector model (`TRADINGAI_ML_ALLOW_GLOBAL_FALLBACK=false` by default). Paper portfolio with `TRADINGAI_L5_RANKING=true` keeps only bullish-sector predictions and sorts/weights by `TRADINGAI_PORTFOLIO_RANK_KEY` (`combined_score` default).
 
 ```
 Use tradingai-predict to rank_sector_candidates (bullish sectors).
