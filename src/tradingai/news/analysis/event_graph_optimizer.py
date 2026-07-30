@@ -135,7 +135,13 @@ def resimulate_fused_news_scores(
     *,
     news_params: dict[str, Any] | None = None,
     event_graph_params: dict[str, Any] | None = None,
+    l3_spill_alpha: float | None = None,
 ) -> list[dict[str, Any]]:
+    from tradingai.news.analysis.l3_spillover import (
+        apply_l3_spill_to_score,
+        extract_l3_spill_inputs,
+    )
+
     updated: list[dict[str, Any]] = []
     for row in rows:
         copy = dict(row)
@@ -145,7 +151,14 @@ def resimulate_fused_news_scores(
             event_graph_params=event_graph_params,
         )
         if resolved is not None:
-            copy["news_score"] = resolved
+            news_score = float(resolved)
+            if l3_spill_alpha is not None:
+                inputs = extract_l3_spill_inputs(row)
+                if inputs is not None:
+                    news_score = apply_l3_spill_to_score(
+                        news_score, inputs, l3_spill_alpha
+                    )
+            copy["news_score"] = round(news_score, 4)
         updated.append(copy)
     return updated
 

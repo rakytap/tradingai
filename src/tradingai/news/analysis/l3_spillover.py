@@ -104,3 +104,77 @@ def load_neighbor_news_scores(
         if directional is not None:
             scores[ticker] = directional
     return scores
+
+
+def _parse_agent_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("agent_payload")
+    if payload is None:
+        return {}
+    if isinstance(payload, str):
+        import json
+
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def extract_l3_spill_inputs(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return stored L3 spill inputs `{own, used}` from prediction agent_payload."""
+    payload = _parse_agent_payload(row)
+    news = payload.get("news")
+    spill = None
+    if isinstance(news, dict):
+        spill = news.get("l3_news_spill")
+    if spill is None:
+        spill = payload.get("l3_news_spill")
+    if not isinstance(spill, dict):
+        return None
+    used = spill.get("used")
+    if not isinstance(used, list) or not used:
+        return None
+    own = spill.get("own")
+    if own is None:
+        return None
+    try:
+        own_f = float(own)
+    except (TypeError, ValueError):
+        return None
+    cleaned: list[dict[str, Any]] = []
+    for item in used:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        try:
+            weight = float(item.get("weight", 0.0))
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        if weight <= 0:
+            continue
+        cleaned.append({"ticker": ticker, "weight": weight, "score": score})
+    if not cleaned:
+        return None
+    return {"own": own_f, "used": cleaned}
+
+
+def rows_with_l3_spill_inputs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if extract_l3_spill_inputs(row) is not None]
+
+
+def apply_l3_spill_to_score(
+    own: float,
+    inputs: dict[str, Any],
+    alpha: float,
+) -> float:
+    """Replay L3 spill blend using frozen neighbor scores from `inputs['used']`."""
+    used = inputs.get("used") or []
+    candidates = [{"ticker": u["ticker"], "weight": u["weight"]} for u in used]
+    neighbor_scores = {str(u["ticker"]).upper(): float(u["score"]) for u in used}
+    adjusted, _meta = blend_l3_news_score(own, candidates, neighbor_scores, alpha)
+    return adjusted

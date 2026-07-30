@@ -9,6 +9,10 @@ from tradingai.news.analysis.event_graph_optimizer import (
     optimize_event_graph,
     resimulate_fused_news_scores,
 )
+from tradingai.news.analysis.l3_spill_optimizer import (
+    L3SpillOptimizationError,
+    optimize_l3_spill_alpha,
+)
 from tradingai.news.analysis.scoring_optimizer import (
     NewsScoringOptimizationError,
     optimize_news_scoring,
@@ -19,7 +23,9 @@ from tradingai.news.config import (
     clear_event_graph_cache,
     clear_news_scoring_cache,
     default_news_scoring_params,
+    get_l3_news_spill_alpha,
     save_event_graph_params,
+    save_l3_spill_alpha,
     save_news_scoring_params,
 )
 from tradingai.news.analysis.events import default_event_graph_params
@@ -109,6 +115,37 @@ def _print_events_summary(result: dict, *, output: Path, dry_run: bool) -> None:
         print(f"  Saved to {output}")
 
 
+def _print_l3_summary(result: dict, *, output: Path, dry_run: bool) -> None:
+    print("L3 news spill alpha optimization complete")
+    print(f"  Metric: {result['metric']} (train_fraction={result['train_fraction']})")
+    print(f"  Alpha: {result['l3_news_spill_alpha']}")
+    samples = result.get("sample_sizes") or {}
+    print(
+        "  Samples: "
+        f"eligible={samples.get('eligible')} "
+        f"train={samples.get('train')} "
+        f"val={samples.get('validation')}"
+    )
+    baseline = result["baseline_validation"]
+    tuned = result["tuned_validation"]
+    print(
+        "  Validation baseline: "
+        f"brier={baseline.get('brier')} "
+        f"direction_accuracy={baseline.get('direction_accuracy')} "
+        f"n={baseline.get('sample_size')}"
+    )
+    print(
+        "  Validation tuned:    "
+        f"brier={tuned.get('brier')} "
+        f"direction_accuracy={tuned.get('direction_accuracy')} "
+        f"n={tuned.get('sample_size')}"
+    )
+    if dry_run:
+        print("  Dry run — L3 spill alpha not written.")
+    else:
+        print(f"  Merged into {output}")
+
+
 def _print_fusion_summary(result: dict, *, output: Path, dry_run: bool) -> None:
     weights = result["weights"]
     scales = result["horizon_scales"]
@@ -167,6 +204,7 @@ def tune_fusion_weights(
     news_only: bool = False,
     skip_events: bool = False,
     events_only: bool = False,
+    skip_l3: bool = False,
 ) -> dict:
     if skip_news and news_only:
         raise FusionOptimizationError("Cannot combine --skip-news and --news-only.")
@@ -201,6 +239,7 @@ def tune_fusion_weights(
         return {
             "news": news_result,
             "events": None,
+            "l3_spill": None,
             "fusion": None,
         }
 
@@ -231,17 +270,39 @@ def tune_fusion_weights(
         return {
             "news": news_result,
             "events": events_result,
+            "l3_spill": None,
             "fusion": None,
         }
 
-    fusion_rows = resimulate_fused_news_scores(
-        rows,
-        news_params=None if skip_news else news_params,
-        event_graph_params=None if skip_events else event_graph_params,
-    )
-    # If both phases skipped, keep stored news_score (resimulate is no-op without params).
+    l3_result: dict | None = None
+    l3_alpha: float | None = None
+    if not skip_l3:
+        l3_result = optimize_l3_spill_alpha(
+            rows,
+            fusion_weights=fusion_weights,
+            horizon_scales=horizon_scales,
+            news_params=None if skip_news else news_params,
+            event_graph_params=None if skip_events else event_graph_params,
+            train_fraction=train_fraction,
+            min_samples=min_samples,
+        )
+        l3_alpha = float(l3_result["l3_news_spill_alpha"])
+        if not dry_run:
+            save_l3_spill_alpha(l3_alpha, path=news_output, result=l3_result)
+    else:
+        l3_alpha = get_l3_news_spill_alpha()
+
+    # Re-sim only when news and/or events params were applied; else keep stored
+    # news_score (already includes any spill from prediction time).
     if skip_news and skip_events:
         fusion_rows = rows
+    else:
+        fusion_rows = resimulate_fused_news_scores(
+            rows,
+            news_params=None if skip_news else news_params,
+            event_graph_params=None if skip_events else event_graph_params,
+            l3_spill_alpha=l3_alpha,
+        )
 
     fusion_result = optimize_fusion(
         fusion_rows,
@@ -263,6 +324,7 @@ def tune_fusion_weights(
     return {
         "news": news_result,
         "events": events_result,
+        "l3_spill": l3_result,
         "fusion": fusion_result,
     }
 
@@ -270,7 +332,7 @@ def tune_fusion_weights(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Tune news scoring, L2 event-graph structure/knobs, then fusion agent "
+            "Tune news scoring, L2 event-graph, L3 spill alpha, then fusion agent "
             "weights and horizon scales from evaluated predictions."
         )
     )
@@ -304,7 +366,7 @@ def main() -> None:
         default=30,
         help=(
             "Minimum evaluated rows required (per horizon for fusion; "
-            "with snapshots for news; with events for L2)."
+            "with snapshots for news; with events for L2; with l3_news_spill for L3)."
         ),
     )
     parser.add_argument(
@@ -326,7 +388,7 @@ def main() -> None:
     parser.add_argument(
         "--news-only",
         action="store_true",
-        help="Tune and write news scoring only; skip event-graph and fusion phases.",
+        help="Tune and write news scoring only; skip event-graph, L3, and fusion phases.",
     )
     parser.add_argument(
         "--skip-events",
@@ -336,7 +398,12 @@ def main() -> None:
     parser.add_argument(
         "--events-only",
         action="store_true",
-        help="Tune event-graph (and news unless --skip-news); skip fusion phase.",
+        help="Tune event-graph (and news unless --skip-news); skip L3 and fusion phases.",
+    )
+    parser.add_argument(
+        "--skip-l3",
+        action="store_true",
+        help="Skip L3 spill alpha tuning; keep file/env alpha for fusion resim.",
     )
     parser.add_argument(
         "--dry-run",
@@ -359,11 +426,13 @@ def main() -> None:
             news_only=args.news_only,
             skip_events=args.skip_events,
             events_only=args.events_only,
+            skip_l3=args.skip_l3,
         )
     except (
         FusionOptimizationError,
         NewsScoringOptimizationError,
         EventGraphOptimizationError,
+        L3SpillOptimizationError,
     ) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -372,6 +441,10 @@ def main() -> None:
     if result.get("events") is not None:
         _print_events_summary(
             result["events"], output=args.events_output, dry_run=args.dry_run
+        )
+    if result.get("l3_spill") is not None:
+        _print_l3_summary(
+            result["l3_spill"], output=args.news_output, dry_run=args.dry_run
         )
     if result.get("fusion") is not None:
         _print_fusion_summary(result["fusion"], output=args.output, dry_run=args.dry_run)

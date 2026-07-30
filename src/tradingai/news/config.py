@@ -96,7 +96,11 @@ def load_news_scoring() -> dict | None:
         return None
     if not isinstance(payload, dict):
         return None
-    if "source_weights" not in payload and "recency" not in payload:
+    if (
+        "source_weights" not in payload
+        and "recency" not in payload
+        and "l3_news_spill_alpha" not in payload
+    ):
         return None
     return payload
 
@@ -132,9 +136,20 @@ def get_news_scoring_params() -> dict[str, Any]:
     return _merge_scoring_params(load_news_scoring())
 
 
+def _read_news_scoring_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def save_news_scoring_params(result: dict, path: Path | None = None) -> Path:
     target = path or get_news_scoring_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+    existing = _read_news_scoring_file(target)
     payload = {
         "tuned_at": result.get("tuned_at"),
         "metric": result.get("metric", "brier"),
@@ -144,6 +159,42 @@ def save_news_scoring_params(result: dict, path: Path | None = None) -> Path:
         "baseline_validation": result.get("baseline_validation"),
         "tuned_validation": result.get("tuned_validation"),
     }
+    if "l3_news_spill_alpha" in result:
+        payload["l3_news_spill_alpha"] = max(
+            0.0, min(1.0, float(result["l3_news_spill_alpha"]))
+        )
+    elif "l3_news_spill_alpha" in existing:
+        try:
+            payload["l3_news_spill_alpha"] = max(
+                0.0, min(1.0, float(existing["l3_news_spill_alpha"]))
+            )
+        except (TypeError, ValueError):
+            pass
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    clear_news_scoring_cache()
+    return target
+
+
+def save_l3_spill_alpha(
+    alpha: float,
+    *,
+    path: Path | None = None,
+    result: dict | None = None,
+) -> Path:
+    """Merge tuned L3 spill alpha into news_scoring.json without wiping other keys."""
+    target = path or get_news_scoring_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = _read_news_scoring_file(target)
+    clipped = max(0.0, min(1.0, float(alpha)))
+    payload["l3_news_spill_alpha"] = round(clipped, 4)
+    if result:
+        payload["l3_spill_tuned_at"] = result.get("tuned_at")
+        if result.get("sample_sizes") is not None:
+            payload["l3_spill_sample_sizes"] = result["sample_sizes"]
+        if result.get("baseline_validation") is not None:
+            payload["l3_spill_baseline_validation"] = result["baseline_validation"]
+        if result.get("tuned_validation") is not None:
+            payload["l3_spill_tuned_validation"] = result["tuned_validation"]
     target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     clear_news_scoring_cache()
     return target
@@ -166,13 +217,23 @@ def is_l3_news_spill_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-@lru_cache
-def get_l3_news_spill_alpha() -> float:
+def _alpha_from_env() -> float:
     raw = os.getenv("TRADINGAI_L3_NEWS_SPILL_ALPHA", str(DEFAULT_L3_NEWS_SPILL_ALPHA))
     try:
         return max(0.0, min(1.0, float(raw.strip())))
     except ValueError:
         return DEFAULT_L3_NEWS_SPILL_ALPHA
+
+
+@lru_cache
+def get_l3_news_spill_alpha() -> float:
+    tuned = load_news_scoring()
+    if tuned is not None and "l3_news_spill_alpha" in tuned:
+        try:
+            return max(0.0, min(1.0, float(tuned["l3_news_spill_alpha"])))
+        except (TypeError, ValueError):
+            pass
+    return _alpha_from_env()
 
 
 def clear_l3_spill_cache() -> None:

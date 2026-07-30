@@ -43,4 +43,6 @@ combined_score =
 
 Weights come from tuned `data/fusion_weights.json` or `TRADINGAI_PREDICT_WEIGHTS` (default ~0.45 / 0.35 / 0.20).
 
+L3 spill blend weight α comes from tuned `l3_news_spill_alpha` in `data/news_scoring.json` (via `tradingai-tune-fusion`) when news scoring load is enabled; otherwise `TRADINGAI_L3_NEWS_SPILL_ALPHA` (default `0.25`).
+
 Assumes `TRADINGAI_PREDICT_BACKEND=ml` for the technical leg (L5). With `fusion`, technical is rule-based indicators instead of the CS model.

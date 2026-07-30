@@ -126,7 +126,7 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_EVENT_GRAPH_PATH` | Path to offline-tuned L2 event-graph JSON (default `./data/event_graph.json`) |
 | `TRADINGAI_EVENT_GRAPH_ENABLED` | Load tuned THEME_EDGES / EVENT_SPECS / knobs when `1` (default); set `0` for code defaults |
 | `TRADINGAI_L3_NEWS_SPILL` | Blend L3 neighbor cached news into news agent score when `1` (default) |
-| `TRADINGAI_L3_NEWS_SPILL_ALPHA` | Spill blend weight in `[0, 1]` (default `0.25`) |
+| `TRADINGAI_L3_NEWS_SPILL_ALPHA` | Spill blend weight fallback in `[0, 1]` (default `0.25`); overridden by `l3_news_spill_alpha` in news scoring JSON when enabled |
 | `TRADINGAI_ENV` | `dev` or `prod` — selects local DB when URL is unset (`dev` → `tradingai_dev`, `prod` → `tradingai`; default `prod`) |
 | `TRADINGAI_DATABASE_URL` | Optional explicit PostgreSQL URL (overrides `TRADINGAI_ENV`) |
 | `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
@@ -534,18 +534,19 @@ tradingai-predict-eval    # or: uv run tradingai-predict-eval
 
 ---
 
-## Step 9b — Tune news scoring, L2 event graph, and fusion weights (offline optimizer)
+## Step 9b — Tune news scoring, L2 event graph, L3 spill α, and fusion weights (offline optimizer)
 
-**Purpose:** Nested offline tuning. (1) News source weights / recency, (2) L2 event-graph knobs + THEME_EDGES / EVENT_SPECS structure, (3) fusion agent weights / horizon scales. Results are auto-loaded at inference time.
+**Purpose:** Nested offline tuning. (1) News source weights / recency, (2) L2 event-graph knobs + THEME_EDGES / EVENT_SPECS structure, (3) L3 spill α, (4) fusion agent weights / horizon scales. Results are auto-loaded at inference time.
 
 ```bash
 tradingai-predict-eval                    # need evaluated outcomes first
-tradingai-tune-fusion                     # news → event-graph → fusion JSON artifacts
+tradingai-tune-fusion                     # news → event-graph → L3 α → fusion JSON artifacts
 tradingai-tune-fusion --dry-run           # preview without writing
 tradingai-tune-fusion --skip-news         # skip news phase
 tradingai-tune-fusion --skip-events       # skip L2 event-graph phase
+tradingai-tune-fusion --skip-l3           # skip L3 spill alpha; keep file/env α
 tradingai-tune-fusion --news-only         # write news scoring only
-tradingai-tune-fusion --events-only       # news (unless --skip-news) + event-graph; skip fusion
+tradingai-tune-fusion --events-only       # news (unless --skip-news) + event-graph; skip L3/fusion
 ```
 
 **What this does:**
@@ -554,19 +555,21 @@ tradingai-tune-fusion --events-only       # news (unless --skip-news) + event-gr
 2. Writes `data/news_scoring.json` (unless `--dry-run` / `--skip-news`)
 3. **L2 event-graph phase:** greedy search over propagation decay / score divisor / edge scale, THEME_EDGES weights (incl. ablation), EVENT_SPECS enablement + theme remap, and pattern leave-one-out ablation when `event_text_corpus` is present
 4. Writes `data/event_graph.json` (unless `--dry-run` / `--skip-events`)
-5. **Fusion phase:** re-simulates `news_score` preferring event exposure when resolvable (else sentiment), then grid-searches fusion weights and per-horizon sigmoid scales
-6. Writes `data/fusion_weights.json` (unless `--dry-run` / `--news-only` / `--events-only`)
+5. **L3 spill phase:** grids `l3_news_spill_alpha` on rows with stored `l3_news_spill` neighbor inputs; merges into `data/news_scoring.json` (unless `--dry-run` / `--skip-l3`)
+6. **Fusion phase:** re-simulates `news_score` (events preferred, else sentiment, then L3 spill), then grid-searches fusion weights and per-horizon sigmoid scales
+7. Writes `data/fusion_weights.json` (unless `--dry-run` / `--news-only` / `--events-only`)
 
 **Requirements:**
 
 - Fusion phase: at least `--min-samples` evaluated rows **per horizon** (default 30)
 - News phase: at least `--min-samples` evaluated rows **with** `scoring_snapshot`
 - Event-graph phase: at least `--min-samples` evaluated rows **with** stored `events` and/or `event_text_corpus`. Pattern ablation needs `event_text_corpus` (attached on new predictions after this feature)
+- L3 spill phase: at least `--min-samples` rows **with** `l3_news_spill` inputs
 
 **Disable auto-load:**
 
 - `TRADINGAI_FUSION_TUNING_ENABLED=0` — fusion env/code defaults
-- `TRADINGAI_NEWS_SCORING_ENABLED=0` — news env/code defaults (`TRADINGAI_SOCIAL_WEIGHT`, built-in source weights / half-life)
+- `TRADINGAI_NEWS_SCORING_ENABLED=0` — news env/code defaults (`TRADINGAI_SOCIAL_WEIGHT`, built-in source weights / half-life); also falls back to `TRADINGAI_L3_NEWS_SPILL_ALPHA` for spill α
 - `TRADINGAI_EVENT_GRAPH_ENABLED=0` — L2 code defaults (`ontology.py` / `EVENT_SPECS`)
 
 Restart MCP/workers after tuning so config caches reload.
@@ -622,7 +625,7 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | Daily (before analysis) | `tradingai-sync-prices` | Fresh price data for evaluation |
 | On demand | Ask Cursor to analyze tickers or generate predictions | Research |
 | Daily (after close) | `tradingai-predict-eval` | Backfill outcomes, update metrics |
-| Weekly (after eval history builds) | `tradingai-tune-fusion` | Retune news scoring, L2 event graph, and fusion weights/scales from evaluated predictions |
+| Weekly (after eval history builds) | `tradingai-tune-fusion` | Retune news scoring, L2 event graph, L3 spill α, and fusion weights/scales from evaluated predictions |
 | Weekly | `tradingai-sync-stocks`, `tradingai-sync-news` | Refresh metadata and news |
 
 ---

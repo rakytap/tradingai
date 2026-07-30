@@ -185,16 +185,17 @@ After horizons mature (3 / 5 / 8 trading days):
 
 ## 6. Tune the fusion model (offline)
 
-Nested optimizer: **news scoring** → **L2 event graph** → **fusion agent weights / horizon scales**. Each phase writes JSON that prediction time auto-loads (when enabled).
+Nested optimizer: **news scoring** → **L2 event graph** → **L3 spill α** → **fusion agent weights / horizon scales**. Each phase writes JSON that prediction time auto-loads (when enabled).
 
 ```bash
 tradingai-sync-prices && tradingai-predict-eval   # need evaluated rows first
-tradingai-tune-fusion                             # news → event-graph → fusion
+tradingai-tune-fusion                             # news → event-graph → L3 α → fusion
 tradingai-tune-fusion --dry-run                   # preview metrics, no write
 tradingai-tune-fusion --skip-news                 # skip news phase
 tradingai-tune-fusion --skip-events               # skip L2 event-graph phase
+tradingai-tune-fusion --skip-l3                   # skip L3 spill alpha; keep file/env α
 tradingai-tune-fusion --news-only                 # news scoring only
-tradingai-tune-fusion --events-only               # news (unless --skip-news) + event-graph; skip fusion
+tradingai-tune-fusion --events-only               # news (unless --skip-news) + event-graph; skip L3/fusion
 ```
 
 ### What it searches
@@ -203,7 +204,8 @@ tradingai-tune-fusion --events-only               # news (unless --skip-news) + 
 |-------|--------|-----------|--------|
 | **News** | Evaluated rows with `scoring_snapshot` in `agent_payload.news` | Grid source blend + recency half-life; minimize validation Brier (fusion weights held fixed) | `data/news_scoring.json` |
 | **L2 events** | Rows with stored `events` and/or `event_text_corpus` | Greedy knobs + THEME_EDGES weights + EVENT_SPECS enable/theme remap/pattern ablation | `data/event_graph.json` |
-| **Fusion** | Re-simulated `news_score` (events preferred, else sentiment) + stored tech/regime scores | Grid technical/news/regime weights + per-horizon sigmoid scales | `data/fusion_weights.json` |
+| **L3 spill α** | Rows with `agent_payload.news.l3_news_spill.used` (frozen neighbor scores) | Grid `l3_news_spill_alpha`; minimize validation Brier | merges `l3_news_spill_alpha` into `data/news_scoring.json` |
+| **Fusion** | Re-simulated `news_score` (events preferred, else sentiment, then L3 spill) + stored tech/regime scores | Grid technical/news/regime weights + per-horizon sigmoid scales | `data/fusion_weights.json` |
 
 Useful flags: `--min-samples` (default 30), `--horizon N`, `--weight-step 0.05`, `--train-fraction 0.7`, `--output` / `--news-output` / `--events-output`.
 
@@ -212,13 +214,14 @@ Useful flags: `--min-samples` (default 30), `--horizon N`, `--weight-step 0.05`,
 - **Fusion phase:** ≥ `--min-samples` evaluated rows **per horizon**.
 - **News phase:** ≥ `--min-samples` evaluated rows **with** `scoring_snapshot`.
 - **Event-graph phase:** ≥ `--min-samples` rows with `events` and/or `event_text_corpus`. Pattern ablation only runs on rows that include `event_text_corpus` (new predictions after corpus support).
+- **L3 spill phase:** ≥ `--min-samples` rows with `l3_news_spill` inputs (predictions made with spill enabled and neighbor caches present).
 
 ### How inference picks up the result
 
 | Env | Role |
 |-----|------|
 | `TRADINGAI_FUSION_TUNING_ENABLED=1` (default) | Load `TRADINGAI_FUSION_TUNING_PATH` (default `./data/fusion_weights.json`) |
-| `TRADINGAI_NEWS_SCORING_ENABLED=1` (default) | Load `TRADINGAI_NEWS_SCORING_PATH` (default `./data/news_scoring.json`) |
+| `TRADINGAI_NEWS_SCORING_ENABLED=1` (default) | Load `TRADINGAI_NEWS_SCORING_PATH` (default `./data/news_scoring.json`), including tuned `l3_news_spill_alpha` when present |
 | `TRADINGAI_EVENT_GRAPH_ENABLED=1` (default) | Load `TRADINGAI_EVENT_GRAPH_PATH` (default `./data/event_graph.json`) |
 | Set any to `0` | Fall back to env/code defaults for that layer |
 
@@ -258,6 +261,7 @@ tradingai-tune-fusion
 # tradingai-tune-fusion --dry-run
 # tradingai-tune-fusion --skip-news
 # tradingai-tune-fusion --skip-events
+# tradingai-tune-fusion --skip-l3
 # tradingai-tune-fusion --events-only
 ```
 
