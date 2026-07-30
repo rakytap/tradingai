@@ -15,6 +15,7 @@ DEFAULT_SOCIAL_PROVIDERS = ("reddit",)
 DEFAULT_SOCIAL_WEIGHT = 0.45
 DEFAULT_NEWS_SCORING_PATH = Path("./data/news_scoring.json")
 DEFAULT_EVENT_GRAPH_PATH = Path("./data/event_graph.json")
+DEFAULT_L3_NEWS_SPILL_ALPHA = 0.25
 
 DEFAULT_SOURCE_WEIGHTS: dict[str, float] = {
     "news": 1.0,
@@ -156,6 +157,27 @@ def clear_news_scoring_cache() -> None:
     get_news_scoring_path.cache_clear()
     load_news_scoring.cache_clear()
     get_news_scoring_params.cache_clear()
+    clear_l3_spill_cache()
+
+
+@lru_cache
+def is_l3_news_spill_enabled() -> bool:
+    raw = os.getenv("TRADINGAI_L3_NEWS_SPILL", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+@lru_cache
+def get_l3_news_spill_alpha() -> float:
+    raw = os.getenv("TRADINGAI_L3_NEWS_SPILL_ALPHA", str(DEFAULT_L3_NEWS_SPILL_ALPHA))
+    try:
+        return max(0.0, min(1.0, float(raw.strip())))
+    except ValueError:
+        return DEFAULT_L3_NEWS_SPILL_ALPHA
+
+
+def clear_l3_spill_cache() -> None:
+    is_l3_news_spill_enabled.cache_clear()
+    get_l3_news_spill_alpha.cache_clear()
 
 
 @lru_cache

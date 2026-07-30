@@ -125,6 +125,8 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_NEWS_SCORING_ENABLED` | Load tuned news source weights / recency when `1` (default); set `0` for code/env defaults |
 | `TRADINGAI_EVENT_GRAPH_PATH` | Path to offline-tuned L2 event-graph JSON (default `./data/event_graph.json`) |
 | `TRADINGAI_EVENT_GRAPH_ENABLED` | Load tuned THEME_EDGES / EVENT_SPECS / knobs when `1` (default); set `0` for code defaults |
+| `TRADINGAI_L3_NEWS_SPILL` | Blend L3 neighbor cached news into news agent score when `1` (default) |
+| `TRADINGAI_L3_NEWS_SPILL_ALPHA` | Spill blend weight in `[0, 1]` (default `0.25`) |
 | `TRADINGAI_ENV` | `dev` or `prod` — selects local DB when URL is unset (`dev` → `tradingai_dev`, `prod` → `tradingai`; default `prod`) |
 | `TRADINGAI_DATABASE_URL` | Optional explicit PostgreSQL URL (overrides `TRADINGAI_ENV`) |
 | `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
@@ -367,7 +369,7 @@ tradingai-sync-news    # also writes news_graph_events alongside legacy news_eve
 
 MCP `get_news_events` returns live extracted events, propagated sector exposures, and recent DB rows.
 
-**L3 static knowledge graph** (curated, not scraped): ticker → peers / suppliers / customers / thematic proxies (SMH, XLU, …), commodities, and rate/FX flags live in `src/tradingai/news/entity_graph.py`. L2 event themes expand to **related candidates** (e.g. MSFT AI capex → SMH / utilities / grid). Candidates are attached on news `raw` for debugging; fusion news `directional_score` is unchanged until a later gating step. Neo4j / live supply-chain scrape are out of scope.
+**L3 static knowledge graph** (curated, not scraped): ticker → peers / suppliers / customers / thematic proxies (SMH, XLU, …), commodities, and rate/FX flags live in `src/tradingai/news/entity_graph.py`. L2 event themes expand to **related candidates** (e.g. MSFT AI capex → SMH / utilities / grid). With `TRADINGAI_L3_NEWS_SPILL=1` (default), the news agent blends cached neighbor snapshot scores into `directional_score` (α = `TRADINGAI_L3_NEWS_SPILL_ALPHA`); own L2 `event_score` in raw stays unspilled. Neo4j / live supply-chain scrape are out of scope.
 
 ```bash
 tradingai-sync-ticker-kg              # seed DB; --preserve-overlays (default) keeps LLM relation lists

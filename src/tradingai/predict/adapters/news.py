@@ -30,6 +30,26 @@ def adapt_news_signal(ticker: str, payload: dict) -> AgentSignal:
         for risk in payload.get("risk_factors", [])[:1]:
             reasons.append(f"Risk: {risk}")
 
+    related_candidates = payload.get("related_candidates") or []
+    l3_meta = None
+    from tradingai.news.config import get_l3_news_spill_alpha, is_l3_news_spill_enabled
+
+    if is_l3_news_spill_enabled() and related_candidates:
+        from tradingai.news.analysis.l3_spillover import (
+            blend_l3_news_score,
+            load_neighbor_news_scores,
+        )
+
+        neighbor_scores = load_neighbor_news_scores(related_candidates)
+        if neighbor_scores:
+            directional, l3_meta = blend_l3_news_score(
+                directional,
+                related_candidates,
+                neighbor_scores,
+                get_l3_news_spill_alpha(),
+            )
+            bullish_score = (directional + 1.0) / 2.0
+
     bearish_score = 1.0 - bullish_score
     raw = {
         **payload,
@@ -37,9 +57,11 @@ def adapt_news_signal(ticker: str, payload: dict) -> AgentSignal:
         "event_score": event_score,
         "events": payload.get("events") or [],
         "propagated_sectors": payload.get("propagated_sectors") or {},
-        "related_candidates": payload.get("related_candidates") or [],
+        "related_candidates": related_candidates,
         "news_score_source": "events" if event_score is not None else "sentiment",
     }
+    if l3_meta is not None:
+        raw["l3_news_spill"] = l3_meta
 
     return AgentSignal(
         agent="news",

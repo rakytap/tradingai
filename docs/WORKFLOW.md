@@ -21,7 +21,7 @@ flowchart TD
 |-------|------|
 | **L1 / L4** | Market factors + sector board: which sectors are tradable (`bullish` / `neutral` / `bearish`) |
 | **L2** | News as typed events → ontology → sector exposure (news agent score) |
-| **L3** | Static ticker graph → related candidates (informational; not fusion score yet) |
+| **L3** | Static ticker graph → related candidates; inbound spill blends cached neighbor news into the news agent score |
 | **L5** | Cross-sectional ML: who wins *inside* a bullish sector |
 | **Fusion** | Weighted technical + news + regime → stored multi-horizon probabilities |
 
@@ -41,13 +41,15 @@ Watchlist comes from `TRADINGAI_SYNC_TICKERS` in `.env`.
 | News | `tradingai-sync-news` | `news_events` + L2 `news_graph_events` |
 | Entity graph | `tradingai-sync-ticker-kg` | `ticker_kg_nodes` (static L3 DB mirror; `--preserve-overlays` default) |
 
-Optional L3 LLM curator (human-approved; does **not** change fusion math):
+Optional L3 LLM curator (human-approved; spill uses applied overlays + seed at runtime):
 
 ```bash
 tradingai-propose-ticker-kg MSFT              # OPENAI_API_KEY by default
 tradingai-propose-ticker-kg MSFT --provider groq   # GROQ_API_KEY + Groq OpenAI-compatible API
 tradingai-apply-ticker-kg <path>              # writes DB overlay used by related_candidates
 ```
+
+L3 news spill (`TRADINGAI_L3_NEWS_SPILL=1`, default): when adapting the news agent, blend ticker T’s own L2 `event_score` with cached neighbor sentiment snapshots (α via `TRADINGAI_L3_NEWS_SPILL_ALPHA`, default `0.25`). Snapshots keep the unspilled own score so neighbor lookups do not recurse. Portfolio still ranks via fusion `combined_score` (or `TRADINGAI_PORTFOLIO_RANK_KEY`).
 
 **Suggested cadence:** prices daily; stocks/news weekly; regime when you want a fresh board.
 
@@ -117,7 +119,7 @@ flowchart TD
 
 - Headlines/filings → typed events → theme ontology → sector exposure → news `directional_score`.
 - Scalar sentiment stays in `raw` (fallback if no events match).
-- L3 attaches `related_candidates` (e.g. MSFT AI capex → SMH / utilities / grid) for inspection; **does not** change the news score in this step.
+- L3 attaches `related_candidates` and, when `TRADINGAI_L3_NEWS_SPILL=1`, blends cached neighbor news scores into the news agent directional score (own `event_score` in raw stays L2-only).
 - Edges come from the static seed and/or **LLM curator overlays** in `ticker_kg_nodes` (propose → review → apply).
 
 MCP helpers: `analyze_news_sentiment`, `get_news_events`, `get_ticker_graph`, `get_related_tickers`, `propose_ticker_graph_edges`, `apply_ticker_graph_edges`.
