@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import math
 from datetime import date
 
 from tradingai.data.connection import get_connection
+
+
+def is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
 
 
 def upsert_daily_prices(
@@ -12,6 +20,16 @@ def upsert_daily_prices(
     database_url: str | None = None,
 ) -> int:
     if not rows:
+        return 0
+    clean_rows = [
+        row
+        for row in rows
+        if all(
+            is_finite_number(row.get(key))
+            for key in ("open", "high", "low", "close")
+        )
+    ]
+    if not clean_rows:
         return 0
     with get_connection(database_url) as conn:
         params = [
@@ -24,7 +42,7 @@ def upsert_daily_prices(
                 row["close"],
                 row["volume"],
             )
-            for row in rows
+            for row in clean_rows
         ]
         with conn.cursor() as cur:
             cur.executemany(
@@ -40,7 +58,7 @@ def upsert_daily_prices(
                 """,
                 params,
             )
-    return len(rows)
+    return len(clean_rows)
 
 
 def get_latest_date(ticker: str, database_url: str | None = None) -> date | None:
@@ -59,6 +77,13 @@ def get_forward_return(
     *,
     database_url: str | None = None,
 ) -> float | None:
+    """Return percent change over the next `horizon_days` finite close sessions.
+
+    Rows with non-finite closes are skipped so a single bad sync bar does not
+    poison the outcome.
+    """
+    # Fetch a buffer so skipped NaN bars still leave enough finite sessions.
+    fetch_limit = max(horizon_days * 4, horizon_days + 1) + 5
     with get_connection(database_url) as conn:
         rows = conn.execute(
             """
@@ -68,12 +93,32 @@ def get_forward_return(
             ORDER BY date ASC
             LIMIT %s
             """,
-            (ticker.upper(), start_date, horizon_days + 1),
+            (ticker.upper(), start_date, fetch_limit),
         ).fetchall()
-    if len(rows) < horizon_days + 1:
+
+    finite = [(d, float(c)) for d, c in rows if is_finite_number(c)]
+    if len(finite) < horizon_days + 1:
         return None
-    start_close = float(rows[0][1])
-    end_close = float(rows[horizon_days][1])
+    start_close = finite[0][1]
+    end_close = finite[horizon_days][1]
     if start_close == 0:
         return None
-    return (end_close / start_close - 1.0) * 100.0
+    ret = (end_close / start_close - 1.0) * 100.0
+    if not math.isfinite(ret):
+        return None
+    return ret
+
+
+def delete_nonfinite_daily_prices(*, database_url: str | None = None) -> int:
+    """Remove OHLC rows with non-finite prices (e.g. synced NaN closes)."""
+    with get_connection(database_url) as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM daily_prices
+            WHERE close::text IN ('NaN', 'Infinity', '-Infinity')
+               OR open::text IN ('NaN', 'Infinity', '-Infinity')
+               OR high::text IN ('NaN', 'Infinity', '-Infinity')
+               OR low::text IN ('NaN', 'Infinity', '-Infinity')
+            """
+        )
+        return cur.rowcount if cur.rowcount is not None else 0

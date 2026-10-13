@@ -41,6 +41,12 @@ def main() -> None:
         help="Minimum probability_up to include (default 0.55).",
     )
     parser.add_argument(
+        "--max-per-sector",
+        type=int,
+        default=4,
+        help="Max holdings from one sector (default 4).",
+    )
+    parser.add_argument(
         "--optimizer",
         choices=("score", "markowitz"),
         default="score",
@@ -77,6 +83,7 @@ def main() -> None:
         positions=args.positions,
         cash_weight=args.cash_weight,
         min_probability_up=args.min_probability,
+        max_per_sector=args.max_per_sector,
         notional_usd=args.notional,
         optimizer=args.optimizer,
         lookback_days=args.lookback,

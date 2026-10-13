@@ -11,16 +11,33 @@ from tradingai.providers.registry import get_provider
 
 
 def _ohlcv_rows(df) -> list[dict]:
+    import math
+
     rows: list[dict] = []
     for timestamp, row in df.iterrows():
+        try:
+            open_, high, low, close = (
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+            )
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (open_, high, low, close)):
+            continue
+        try:
+            volume = int(row["volume"])
+        except (TypeError, ValueError):
+            volume = 0
         rows.append(
             {
                 "date": date.fromisoformat(timestamp.date().isoformat()),
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": int(row["volume"]),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
             }
         )
     return rows

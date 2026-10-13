@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime, timezone
 
 from tradingai.data.connection import get_connection
@@ -129,9 +130,15 @@ def update_prediction_outcome(
     *,
     database_url: str | None = None,
 ) -> None:
+    import math
+
     from tradingai.analysis.ml.direction import direction_is_correct
 
-    direction_correct = direction_is_correct(probability_up, actual_return_pct)
+    actual = float(actual_return_pct)
+    if not math.isfinite(actual):
+        raise ValueError(f"actual_return_pct must be finite, got {actual_return_pct!r}")
+
+    direction_correct = direction_is_correct(probability_up, actual)
     evaluated_at = datetime.now(timezone.utc)
     with get_connection(database_url) as conn:
         conn.execute(
@@ -142,7 +149,7 @@ def update_prediction_outcome(
                 evaluated_at = %s
             WHERE id = %s
             """,
-            (actual_return_pct, direction_correct, evaluated_at, prediction_id),
+            (actual, direction_correct, evaluated_at, prediction_id),
         )
 
 
@@ -151,7 +158,13 @@ def get_evaluated_predictions(
     *,
     database_url: str | None = None,
 ) -> list[dict]:
-    query = "SELECT * FROM predictions WHERE actual_return_pct IS NOT NULL"
+    # Exclude SQL NaN (IS NOT NULL still matches NaN).
+    query = """
+        SELECT *
+        FROM predictions
+        WHERE actual_return_pct IS NOT NULL
+          AND actual_return_pct = actual_return_pct
+    """
     params: list[object] = []
     if horizon_days is not None:
         query += " AND horizon_days = %s"
@@ -182,6 +195,7 @@ def get_track_record(
             AVG(probability_up) AS avg_predicted_prob
         FROM predictions
         WHERE actual_return_pct IS NOT NULL
+          AND actual_return_pct = actual_return_pct
     """
     params: list[object] = []
     if sector:
@@ -207,6 +221,8 @@ def get_track_record(
     hit_rate = float(row[1]) if row[1] is not None else None
     avg_return = float(row[2]) if row[2] is not None else None
     avg_predicted_prob = float(row[3]) if row[3] is not None else None
+    if avg_return is not None and not math.isfinite(avg_return):
+        avg_return = None
     overconfidence = None
     if hit_rate is not None and avg_predicted_prob is not None:
         overconfidence = round(avg_predicted_prob - hit_rate, 4)
@@ -237,6 +253,7 @@ def get_segment_calibration(
             AVG(POWER(probability_up - CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END, 2)) AS brier_score
         FROM predictions
         WHERE actual_return_pct IS NOT NULL
+          AND actual_return_pct = actual_return_pct
     """
     params: list[object] = []
     if horizon_days is not None:
@@ -255,6 +272,12 @@ def get_segment_calibration(
     for row in rows:
         hit_rate = float(row[4]) if row[4] is not None else None
         avg_predicted_prob = float(row[6]) if row[6] is not None else None
+        avg_return = float(row[5]) if row[5] is not None else None
+        if avg_return is not None and not math.isfinite(avg_return):
+            avg_return = None
+        brier = float(row[7]) if row[7] is not None else None
+        if brier is not None and not math.isfinite(brier):
+            brier = None
         results.append(
             {
                 "sector": row[0],
@@ -262,11 +285,11 @@ def get_segment_calibration(
                 "horizon_days": row[2],
                 "sample_size": int(row[3]),
                 "hit_rate": round(hit_rate, 4) if hit_rate is not None else None,
-                "avg_return_pct": round(float(row[5]), 4) if row[5] is not None else None,
+                "avg_return_pct": round(avg_return, 4) if avg_return is not None else None,
                 "avg_predicted_prob": (
                     round(avg_predicted_prob, 4) if avg_predicted_prob is not None else None
                 ),
-                "brier_score": round(float(row[7]), 4) if row[7] is not None else None,
+                "brier_score": round(brier, 4) if brier is not None else None,
                 "overconfidence": (
                     round(avg_predicted_prob - hit_rate, 4)
                     if hit_rate is not None and avg_predicted_prob is not None
@@ -275,3 +298,19 @@ def get_segment_calibration(
             }
         )
     return results
+
+
+def reset_nonfinite_prediction_outcomes(*, database_url: str | None = None) -> int:
+    """Clear outcomes whose actual_return_pct is NaN/Inf so they can be re-evaluated."""
+    with get_connection(database_url) as conn:
+        cur = conn.execute(
+            """
+            UPDATE predictions
+            SET actual_return_pct = NULL,
+                direction_correct = NULL,
+                evaluated_at = NULL
+            WHERE actual_return_pct IS NOT NULL
+              AND actual_return_pct::text IN ('NaN', 'Infinity', '-Infinity')
+            """
+        )
+        return cur.rowcount if cur.rowcount is not None else 0

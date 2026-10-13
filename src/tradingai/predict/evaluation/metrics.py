@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import statistics
 from collections import defaultdict
 
@@ -11,6 +12,24 @@ from tradingai.analysis.ml.direction import (
 )
 from tradingai.predict.config import get_prediction_horizons
 from tradingai.predict.storage.repository import get_evaluated_rows, get_segment_calibration
+
+
+def _finite(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _rows_with_finite_returns(rows: list[dict]) -> list[dict]:
+    cleaned: list[dict] = []
+    for row in rows:
+        actual = _finite(row.get("actual_return_pct"))
+        if actual is None:
+            continue
+        cleaned.append({**row, "actual_return_pct": actual})
+    return cleaned
 
 
 def _precision_recall(
@@ -60,19 +79,25 @@ def _brier_score(rows: list[dict]) -> float | None:
 
 
 def _mae_expected_return(rows: list[dict]) -> float | None:
-    errors = [
-        abs(float(row["expected_return_pct"]) - float(row["actual_return_pct"]))
-        for row in rows
-    ]
+    errors: list[float] = []
+    for row in rows:
+        expected = _finite(row.get("expected_return_pct"))
+        actual = _finite(row.get("actual_return_pct"))
+        if expected is None or actual is None:
+            continue
+        errors.append(abs(expected - actual))
     return statistics.mean(errors) if errors else None
 
 
 def _top_ranked_return(rows: list[dict], top_n: int = 10) -> float | None:
     by_date: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
+        actual = _finite(row.get("actual_return_pct"))
+        if actual is None:
+            continue
         ts = row["timestamp"]
         key = ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
-        by_date[key].append(row)
+        by_date[key].append({**row, "actual_return_pct": actual})
 
     daily_returns: list[float] = []
     for day_rows in by_date.values():
@@ -92,7 +117,7 @@ def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
     summary: dict[str, dict] = {}
 
     for horizon in horizons:
-        rows = get_evaluated_rows(horizon)
+        rows = _rows_with_finite_returns(get_evaluated_rows(horizon))
         if not rows:
             summary[str(horizon)] = {
                 "sample_size": 0,
@@ -108,6 +133,9 @@ def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
 
         direction_accuracy = _direction_accuracy(rows, threshold=threshold)
         precision_recall = _precision_recall(rows, threshold=threshold)
+        mae = _mae_expected_return(rows)
+        brier = _brier_score(rows)
+        top10 = _top_ranked_return(rows)
         summary[str(horizon)] = {
             "sample_size": len(rows),
             "direction_accuracy": (
@@ -123,19 +151,9 @@ def compute_evaluation_metrics(horizon_days: int | None = None) -> dict:
                 if precision_recall["recall"] is not None
                 else None
             ),
-            "mae_expected_return_pct": (
-                round(_mae_expected_return(rows), 4)
-                if _mae_expected_return(rows) is not None
-                else None
-            ),
-            "brier_score": (
-                round(_brier_score(rows), 4) if _brier_score(rows) is not None else None
-            ),
-            "top_10_ranked_return_pct": (
-                round(_top_ranked_return(rows), 4)
-                if _top_ranked_return(rows) is not None
-                else None
-            ),
+            "mae_expected_return_pct": round(mae, 4) if mae is not None else None,
+            "brier_score": round(brier, 4) if brier is not None else None,
+            "top_10_ranked_return_pct": round(top10, 4) if top10 is not None else None,
             "direction_threshold": round(threshold, 4),
         }
 

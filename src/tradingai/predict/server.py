@@ -58,6 +58,7 @@ def get_paper_portfolio(
     positions: int = 10,
     cash_weight: float = 0.10,
     min_probability_up: float = 0.55,
+    max_per_sector: int = 4,
     notional_usd: float = 100_000.0,
     horizon_days: int | None = None,
     optimizer: str = "score",
@@ -70,11 +71,13 @@ def get_paper_portfolio(
     optimizer='score' weights by combined_score (default).
     optimizer='markowitz' uses prediction expected returns plus covariance from
     synced daily_prices (requires tradingai-sync-prices).
+    max_per_sector caps names from any one sector (default 4).
     """
     return predict.get_paper_portfolio_tool(
         positions=positions,
         cash_weight=cash_weight,
         min_probability_up=min_probability_up,
+        max_per_sector=max_per_sector,
         notional_usd=notional_usd,
         horizon_days=horizon_days,
         optimizer=optimizer,

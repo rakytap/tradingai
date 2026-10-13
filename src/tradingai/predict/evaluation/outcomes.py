@@ -20,6 +20,8 @@ def evaluate_pending_outcomes(
     *,
     as_of: datetime | None = None,
 ) -> dict:
+    import math
+
     as_of = _to_utc(as_of) if as_of else datetime.now(timezone.utc)
     pending = get_predictions_pending_outcomes(horizon_days)
     evaluated = 0
@@ -42,7 +44,7 @@ def evaluate_pending_outcomes(
                 prediction_dt.date(),
                 horizon_days,
             )
-            if actual_return is None:
+            if actual_return is None or not math.isfinite(float(actual_return)):
                 skipped += 1
                 continue
             save_outcome(
