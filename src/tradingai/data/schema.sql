@@ -121,3 +121,17 @@ CREATE TABLE IF NOT EXISTS ticker_kg_nodes (
     raw_json JSONB NOT NULL DEFAULT '{}',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS intraday_bars (
+    ticker TEXT NOT NULL,
+    bar_time TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION,
+    high DOUBLE PRECISION,
+    low DOUBLE PRECISION,
+    close DOUBLE PRECISION,
+    volume DOUBLE PRECISION,
+    PRIMARY KEY (ticker, bar_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_intraday_bars_ticker_time
+    ON intraday_bars(ticker, bar_time DESC);

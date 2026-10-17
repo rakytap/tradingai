@@ -202,6 +202,17 @@ Historical OHLCV bars.
 
 **Used by:** `tradingai-predict-eval` to compute actual returns after predictions mature.
 
+### `intraday_bars`
+
+Minute OHLCV for the L0 open-dip scanner (short retention).
+
+| Column | Example |
+|--------|---------|
+| `ticker`, `bar_time` | `NVDA`, timestamptz |
+| `open`, `high`, `low`, `close`, `volume` | 1m bar data |
+
+**Populated by:** `tradingai-sync-intraday` (IBKR TWS `1m` historical bars). **Used by:** `tradingai-scan-open-dip` / MCP `scan_open_dip_bounces` (DB-first; `--live` still uses yfinance).
+
 ### `news_events`
 
 Persisted headlines and catalyst tags.
@@ -259,9 +270,11 @@ tradingai-sync-news
 |---------|---------|-----------|
 | `tradingai-sync-stocks` | Fetches sector, industry, market cap from yfinance | `stocks` |
 | `tradingai-sync-prices` | Downloads ~2 years of OHLCV, then incremental updates | `daily_prices` |
+| `tradingai-sync-intraday` | Downloads IBKR TWS 1m bars for L4 bullish-sector watchlist (capped; requires TWS API) | `intraday_bars` |
 | `tradingai-sync-regime` | Builds structured L1/L4 regime state and persists snapshot | `regime_snapshots` |
 | `tradingai-sync-news` | Fetches headlines and catalyst tags per watchlist ticker | `news_events` / `news_graph_events` |
 | `tradingai-sync-ticker-kg` | Upserts curated L3 entity graph into Postgres (`--preserve-overlays` default) | `ticker_kg_nodes` |
+| `tradingai-scan-open-dip` | L0 alert scan: morning open dips + bounce / reclaim status | stdout JSON |
 
 **Tickers synced:** Defined by `TRADINGAI_SYNC_TICKERS` in `.env` (default: `AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY`).
 
@@ -500,11 +513,26 @@ tradingai-paper-portfolio --optimizer markowitz --horizon 5
 tradingai-paper-portfolio --optimizer markowitz --lookback 126 --risk-aversion 3 --max-weight 0.25
 ```
 
+**IBKR soft-cost rebalance** is a separate optimizer: it reoptimizes against a prior paper portfolio JSON and softly penalizes estimated IBKR Pro Tiered US stock/ETF broker commissions (`commission_preference` / γ). Larger γ keeps the book closer to the prior. Requires a previous portfolio file (default `data/paper_portfolio.json`) and synced prices.
+
+```bash
+tradingai-paper-portfolio              # write data/paper_portfolio.json first
+tradingai-sync-prices
+tradingai-paper-portfolio-ibkr-rebalance \
+  --previous-portfolio data/paper_portfolio.json \
+  --commission-preference 1.0 \
+  --notional 100000
+# optional: --monthly-volume-shares for Tiered rate tier; --output data/paper_portfolio_ibkr_rebalance.json
+```
+
+Output includes `estimated_ibkr_commission_usd` and per-holding `prior_weight`, `trade_usd`, `est_commission_usd` (broker commission estimate only; no exchange/regulatory pass-through).
+
 Or via MCP:
 
 ```
 Use tradingai-predict to get a paper portfolio with 10 positions and 10% cash.
-Use tradingai-predict to get a paper portfolio with optimizer markowitz and horizon 5.
+Use tradingai-predict to get a paper portfolio with optimizer markowitz and horizon 8.
+Use tradingai-predict get_paper_portfolio_ibkr_rebalance with previous_portfolio_path data/paper_portfolio.json and commission_preference 1.0.
 ```
 
 ---
@@ -675,8 +703,11 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | `get_evaluation_metrics` | Accuracy, precision/recall, MAE, Brier score, top-10 ranked return |
 | `get_prediction_history` | Query stored predictions for a ticker (or all tickers) with optional `limit` |
 | `get_paper_portfolio` | Diversified paper basket; `optimizer=score` (default) or `markowitz` (cov from `daily_prices`) |
+| `get_paper_portfolio_ibkr_rebalance` | Reoptimize prior paper portfolio with soft IBKR Pro Tiered US commission preference |
 | `get_prediction_track_record` | Segment hit rate, average return, and overconfidence |
 | `get_segment_calibration` | Accuracy and Brier score by sector and prediction type |
+| `rank_sector_candidates` | L5 ranks inside L4 bullish sectors |
+| `scan_open_dip_bounces` | L0 intraday open-dip bounce scan (DB bars from IBKR sync; alert only) |
 
 ---
 

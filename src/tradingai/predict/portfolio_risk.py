@@ -134,6 +134,189 @@ def optimize_markowitz_weights(
     return weights
 
 
+def _soft_tiered_cost_frac(
+    turnover: np.ndarray,
+    prices: np.ndarray,
+    *,
+    notional: float,
+    rate_per_share: float,
+    min_order_usd: float,
+    max_trade_value_frac: float,
+) -> float:
+    """Differentiable IBKR Tiered fee / notional for weight turnovers ``t``."""
+    # Smooth max(a,b) / min(a,b) so SLSQP can feel the $0.35 floor.
+    eps = 1e-12
+    trade_usd = notional * turnover
+    shares = trade_usd / prices
+    raw = rate_per_share * shares
+    floored = 0.5 * ((min_order_usd + raw) + np.sqrt((raw - min_order_usd) ** 2 + eps))
+    cap = max_trade_value_frac * trade_usd
+    fee = 0.5 * ((floored + cap) - np.sqrt((floored - cap) ** 2 + eps))
+    # No fee when turnover is numerically zero.
+    fee = np.where(turnover <= 1e-12, 0.0, fee)
+    return float(fee.sum() / notional)
+
+
+def suppress_uneconomic_rebalance_trades(
+    weights: np.ndarray,
+    prior_weights: np.ndarray,
+    *,
+    notional_usd: float,
+    invested_fraction: float,
+    commission_preference: float,
+    min_trade_usd: float | None = None,
+) -> np.ndarray:
+    """Snap sub-minimum tickets back to prior when commission preference is active.
+
+    Trades below ``MIN_ORDER / 0.5%`` never pay the full $0.35 floor (cap wins) and
+    are noise relative to IBKR's minimum; with ``gamma > 0`` keep the prior leg.
+    """
+    from tradingai.predict.ibkr_fees import min_economic_trade_usd
+
+    gamma = max(0.0, float(commission_preference))
+    if gamma <= 0.0:
+        return np.asarray(weights, dtype=float)
+
+    threshold = float(min_trade_usd) if min_trade_usd is not None else min_economic_trade_usd()
+    # Stronger preference => stricter ticket size (full economic min at gamma>=1).
+    threshold *= min(1.0, gamma)
+
+    notional = max(float(notional_usd), 1e-9)
+    invested = max(0.0, min(1.0, float(invested_fraction)))
+    w = np.asarray(weights, dtype=float).copy()
+    w0 = np.asarray(prior_weights, dtype=float)
+    trade_usd = np.abs(w - w0) * notional
+    uneconomic = (trade_usd > 1e-9) & (trade_usd < threshold)
+    if not np.any(uneconomic):
+        return w
+
+    w[uneconomic] = w0[uneconomic]
+    # Renormalize the movable sleeve so invested weight is preserved.
+    free = ~uneconomic
+    target_free = invested - float(w[~free].sum())
+    free_sum = float(w[free].sum())
+    if free_sum > 1e-12 and target_free > 0:
+        w[free] *= target_free / free_sum
+    elif target_free <= 1e-12:
+        w = w0 * (invested / max(float(w0.sum()), 1e-12))
+    total = float(w.sum())
+    if total > 0:
+        w *= invested / total
+    return w
+
+
+def optimize_markowitz_rebalance_weights(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    prior_weights: np.ndarray,
+    prices: np.ndarray,
+    *,
+    invested_fraction: float,
+    notional_usd: float,
+    commission_preference: float,
+    rate_per_share: float,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    max_weight: float = DEFAULT_MAX_WEIGHT,
+) -> np.ndarray:
+    """Long-only mean-variance with soft IBKR Tiered cost on turnover.
+
+    Decision vector is ``[w_0..w_{n-1}, t_0..t_{n-1}]`` where ``t_i >= |w_i - w0_i|``.
+    Soft cost approximates Tiered ``min(max(per_share, $0.35), 0.5% TV)`` / notional.
+    A post-pass snaps tickets below the economic minimum when ``gamma > 0``.
+    """
+    from tradingai.predict.ibkr_fees import MAX_TRADE_VALUE_FRAC, MIN_ORDER_USD
+
+    n = len(mu)
+    if n == 0:
+        return np.array([], dtype=float)
+    if len(prior_weights) != n or len(prices) != n or sigma.shape != (n, n):
+        raise ValueError("mu, sigma, prior_weights, and prices must align.")
+
+    invested = max(0.0, min(1.0, float(invested_fraction)))
+    notional = max(float(notional_usd), 1e-9)
+    gamma = max(0.0, float(commission_preference))
+    rate = max(0.0, float(rate_per_share))
+    w0 = np.asarray(prior_weights, dtype=float).reshape(n)
+    px = np.asarray(prices, dtype=float).reshape(n)
+    if np.any(px <= 0):
+        raise ValueError("All prices must be positive for rebalance optimization.")
+
+    cap = min(float(max_weight), invested) if n == 1 else float(max_weight)
+    if n * cap + 1e-12 < invested:
+        cap = invested / n
+
+    w_init = np.clip(w0, 0.0, cap)
+    w_sum = float(w_init.sum())
+    if w_sum <= 1e-12:
+        w_init = np.full(n, invested / n, dtype=float)
+    else:
+        w_init = w_init * (invested / w_sum)
+    t_init = np.abs(w_init - w0)
+    x0 = np.concatenate([w_init, t_init])
+
+    def objective(x: np.ndarray) -> float:
+        w = x[:n]
+        t = x[n:]
+        mv = float(-(w @ mu) + 0.5 * risk_aversion * (w @ sigma @ w))
+        if gamma <= 0.0:
+            return mv
+        soft_cost = gamma * _soft_tiered_cost_frac(
+            t,
+            px,
+            notional=notional,
+            rate_per_share=rate,
+            min_order_usd=MIN_ORDER_USD,
+            max_trade_value_frac=MAX_TRADE_VALUE_FRAC,
+        )
+        return mv + soft_cost
+
+    constraints = [
+        {"type": "eq", "fun": lambda x: float(np.sum(x[:n]) - invested)},
+        *[
+            {
+                "type": "ineq",
+                "fun": lambda x, i=i: float(x[n + i] - (x[i] - w0[i])),
+            }
+            for i in range(n)
+        ],
+        *[
+            {
+                "type": "ineq",
+                "fun": lambda x, i=i: float(x[n + i] - (w0[i] - x[i])),
+            }
+            for i in range(n)
+        ],
+    ]
+    bounds = [(0.0, min(cap, invested)) for _ in range(n)] + [
+        (0.0, None) for _ in range(n)
+    ]
+
+    result = minimize(
+        objective,
+        x0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 800, "ftol": 1e-12},
+    )
+    if not result.success:
+        raise RuntimeError(f"Markowitz rebalance optimization failed: {result.message}")
+
+    weights = np.asarray(result.x[:n], dtype=float)
+    weights = np.clip(weights, 0.0, None)
+    total = float(weights.sum())
+    if total <= 0:
+        raise RuntimeError("Markowitz rebalance produced zero weights.")
+    weights *= invested / total
+    return suppress_uneconomic_rebalance_trades(
+        weights,
+        w0,
+        notional_usd=notional,
+        invested_fraction=invested,
+        commission_preference=gamma,
+    )
+
+
 def annualized_volatility_pct(sigma: np.ndarray, index: int) -> float:
     daily_var = float(sigma[index, index])
     return float(np.sqrt(max(daily_var, 0.0) * TRADING_DAYS_PER_YEAR) * 100.0)

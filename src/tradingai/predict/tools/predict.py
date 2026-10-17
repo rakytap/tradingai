@@ -17,7 +17,12 @@ from tradingai.predict.storage.repository import (
     get_track_record,
     save_prediction,
 )
-from tradingai.predict.portfolio import build_paper_portfolio
+from tradingai.predict.portfolio import (
+    DEFAULT_COMMISSION_PREFERENCE,
+    DEFAULT_PREVIOUS_PORTFOLIO_PATH,
+    build_paper_portfolio,
+    build_paper_portfolio_ibkr_rebalance,
+)
 
 
 def get_agent_signals_tool(ticker: str) -> dict:
@@ -122,6 +127,37 @@ def get_paper_portfolio_tool(
     )
 
 
+def get_paper_portfolio_ibkr_rebalance_tool(
+    *,
+    previous_portfolio_path: str = str(DEFAULT_PREVIOUS_PORTFOLIO_PATH),
+    commission_preference: float = DEFAULT_COMMISSION_PREFERENCE,
+    monthly_volume_shares: float = 0.0,
+    positions: int = 10,
+    cash_weight: float = 0.10,
+    min_probability_up: float = 0.55,
+    max_per_sector: int = 4,
+    notional_usd: float = 100_000.0,
+    horizon_days: int | None = None,
+    lookback_days: int = 126,
+    risk_aversion: float = 3.0,
+    max_weight: float = 0.25,
+) -> dict:
+    return build_paper_portfolio_ibkr_rebalance(
+        previous_portfolio_path=previous_portfolio_path,
+        commission_preference=commission_preference,
+        monthly_volume_shares=monthly_volume_shares,
+        horizon_days=horizon_days,
+        positions=positions,
+        cash_weight=cash_weight,
+        min_probability_up=min_probability_up,
+        max_per_sector=max_per_sector,
+        notional_usd=notional_usd,
+        lookback_days=lookback_days,
+        risk_aversion=risk_aversion,
+        max_weight=max_weight,
+    )
+
+
 def get_prediction_track_record_tool(
     sector: str | None = None,
     prediction_type: str | None = None,
@@ -165,4 +201,35 @@ def rank_sector_candidates_tool(
         sector=sector,
         limit=limit,
         horizon_days=horizon_days,
+    )
+
+
+def scan_open_dip_bounces_tool(
+    tickers: list[str] | None = None,
+    dip_pct: float | None = None,
+    window_minutes: int | None = None,
+    prefer_db: bool = True,
+    cap: int | None = None,
+    buy_notional_usd: float | None = None,
+    target_return: float | None = None,
+    sell_trail: float | None = None,
+    profit_taker_buffer: float | None = None,
+    session_day: str | None = None,
+) -> dict:
+    """Scan L4 bullish-sector names for morning open dips and bounce signals."""
+    from tradingai.data.connection import initialize_schema
+    from tradingai.intraday.scan import scan_open_dip_bounces
+
+    initialize_schema()
+    return scan_open_dip_bounces(
+        tickers=tickers,
+        dip_pct=dip_pct,
+        window_minutes=window_minutes,
+        prefer_db=prefer_db,
+        cap=cap,
+        buy_notional_usd=buy_notional_usd,
+        target_return=target_return,
+        sell_trail=sell_trail,
+        profit_taker_buffer=profit_taker_buffer,
+        session_day=session_day,
     )

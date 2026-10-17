@@ -89,14 +89,15 @@ def test_rank_order_stable():
     assert rank_tickers_in_sector  # import smoke
 
 
-def test_portfolio_bullish_gate_drops_bearish():
+def test_portfolio_bullish_gate_uses_live_sector_board():
     candidates = [
         {
             "ticker": "AAPL",
             "combined_score": 0.5,
             "probability_up": 0.7,
             "sector": "Technology",
-            "regime": "bullish",
+            # Stale/market fallback must not matter — Technology is on the board.
+            "regime": "market:bull",
             "ml_rank_score": 0.8,
         },
         {
@@ -104,8 +105,16 @@ def test_portfolio_bullish_gate_drops_bearish():
             "combined_score": 0.9,
             "probability_up": 0.9,
             "sector": "Energy",
-            "regime": "bearish",
+            "regime": "bullish",  # stale label; Energy not on live bullish board
             "ml_rank_score": 0.95,
+        },
+        {
+            "ticker": "EQR",
+            "combined_score": 0.4,
+            "probability_up": 0.6,
+            "sector": "Real Estate",
+            "regime": "bullish",
+            "ml_rank_score": 0.5,
         },
     ]
     selected = select_portfolio_positions(
@@ -114,8 +123,35 @@ def test_portfolio_bullish_gate_drops_bearish():
         min_combined_score=0.0,
         min_probability_up=0.55,
         require_bullish_sector=True,
+        bullish_sectors={"Technology"},
     )
     assert [row["ticker"] for row in selected] == ["AAPL"]
+
+
+def test_portfolio_bullish_gate_drops_market_bull_without_sector(monkeypatch):
+    monkeypatch.setattr(
+        "tradingai.data.repositories.stocks.get_stock",
+        lambda ticker, **kwargs: None,
+    )
+    candidates = [
+        {
+            "ticker": "NOSECTOR",
+            "combined_score": 0.5,
+            "probability_up": 0.7,
+            "sector": None,
+            "regime": "market:bull",
+            "ml_rank_score": 0.8,
+        },
+    ]
+    selected = select_portfolio_positions(
+        candidates,
+        size=5,
+        min_combined_score=0.0,
+        min_probability_up=0.55,
+        require_bullish_sector=True,
+        bullish_sectors={"Technology"},
+    )
+    assert selected == []
 
 
 def _ml_vs_combined_candidates():
@@ -150,6 +186,7 @@ def test_portfolio_prefers_ml_rank_score(monkeypatch):
             min_probability_up=0.5,
             require_bullish_sector=True,
             max_per_sector=10,
+            bullish_sectors={"Technology"},
         )
         assert selected[0]["ticker"] == "HIGH_CS"
     finally:
@@ -167,6 +204,7 @@ def test_portfolio_prefers_combined_score(monkeypatch):
             min_probability_up=0.5,
             require_bullish_sector=True,
             max_per_sector=10,
+            bullish_sectors={"Technology"},
         )
         assert selected[0]["ticker"] == "LOW_CS"
     finally:

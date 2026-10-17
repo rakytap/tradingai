@@ -231,9 +231,33 @@ Suggested cadence: retune weekly once eval history is large enough (see README S
 
 ---
 
+## 7. L0 intraday open-dip bounce scan (alerts only)
+
+Separate from daily fusion / paper Markowitz: find names that plunged after the RTH open and may be reclaiming.
+
+```bash
+tradingai-sync-intraday          # IBKR TWS 1m → intraday_bars (bullish-sector cap; TWS API required)
+tradingai-scan-open-dip          # JSON: candidates + plunging
+tradingai-scan-open-dip --live --dip-pct 2 --window-minutes 60
+```
+
+- Universe: L4 bullish-sector equities (capped; override with `--tickers`).
+- Dip: trough in first N minutes ≤ −`DIP_PCT` vs prior daily close.
+- Status: `plunging` / `stabilizing` / `reclaiming` (VWAP/open reclaim + short momentum).
+- Bounce score penalty (−0.25) when the first 15m composite bar is green (close > session open).
+- Profit taker: `profit_taker_price` nets `target_return + 0.02%` after estimated IBKR Tiered buy+sell fees (`buy_notional_usd` default $20k).
+- Sell trail: activates at fee-aware `trail_activate_price` (`target_return / 2`); trailing distance `sell_trail_pct` (default `target_return / 2`).
+- MCP: `scan_open_dip_bounces` on tradingai-predict.
+- IBKR TWS historical pacing applies — keep the watchlist capped; TWS must be running with API enabled (`TRADINGAI_IBKR_*`).
+- Not a portfolio sleeve and not financial advice.
+
+Env (optional): `TRADINGAI_OPEN_DIP_PCT`, `TRADINGAI_OPEN_DIP_WINDOW_MINUTES`, `TRADINGAI_OPEN_DIP_WATCHLIST_CAP`, `TRADINGAI_OPEN_DIP_BUY_NOTIONAL`, `TRADINGAI_OPEN_DIP_TARGET_RETURN`, `TRADINGAI_OPEN_DIP_PROFIT_TAKER_BUFFER`, `TRADINGAI_OPEN_DIP_SELL_TRAIL`.
+
+---
+
 ## One-line ops loop
 
-Sync stocks / prices / news / regime / ticker-kg → train sector CS models → batch predict (bullish-only optional) → paper portfolio from ranked bullish names → evaluate after horizons mature → `tradingai-tune-fusion` → retrain / re-predict as needed.
+Sync stocks / prices / news / regime / ticker-kg → train sector CS models → batch predict (bullish-only optional) → paper portfolio from ranked bullish names → evaluate after horizons mature → `tradingai-tune-fusion` → retrain / re-predict as needed. Optional during RTH: `tradingai-sync-intraday` → `tradingai-scan-open-dip`.
 
 ---
 
@@ -247,6 +271,7 @@ tradingai-sync-regime
 tradingai-sync-news
 tradingai-sync-ticker-kg
 # optional: tradingai-propose-ticker-kg MSFT && tradingai-apply-ticker-kg <proposal.json>
+# optional RTH: tradingai-sync-intraday
 
 # Models
 tradingai-train-models --by-sector --cross-section --horizon 5
@@ -254,6 +279,9 @@ tradingai-train-models --by-sector --cross-section --horizon 5
 # Predict + portfolio
 tradingai-predict-batch --bullish-sectors-only
 tradingai-paper-portfolio
+
+# Intraday open-dip alerts
+tradingai-scan-open-dip
 
 # Evaluate + tune fusion
 tradingai-sync-prices && tradingai-predict-eval

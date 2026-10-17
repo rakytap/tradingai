@@ -13,15 +13,21 @@ def upsert_stock(
     market_cap: int | None = None,
     database_url: str | None = None,
 ) -> None:
+    """Insert or update a stock row.
+
+    ``None`` metadata fields do not wipe existing values (so jobs like
+    ``tradingai-sync-news`` that only ensure the ticker exists cannot clear
+    sector/industry populated by ``tradingai-sync-stocks``).
+    """
     with get_connection(database_url) as conn:
         conn.execute(
             """
             INSERT INTO stocks (ticker, sector, industry, market_cap, updated_at)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (ticker) DO UPDATE SET
-                sector = EXCLUDED.sector,
-                industry = EXCLUDED.industry,
-                market_cap = EXCLUDED.market_cap,
+                sector = COALESCE(EXCLUDED.sector, stocks.sector),
+                industry = COALESCE(EXCLUDED.industry, stocks.industry),
+                market_cap = COALESCE(EXCLUDED.market_cap, stocks.market_cap),
                 updated_at = EXCLUDED.updated_at
             """,
             (
