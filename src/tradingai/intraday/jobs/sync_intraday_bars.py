@@ -92,7 +92,7 @@ def main() -> None:
     parser.add_argument(
         "--cap",
         type=int,
-        help="Max tickers (default TRADINGAI_OPEN_DIP_WATCHLIST_CAP / 50).",
+        help="Max tickers (default TRADINGAI_OPEN_DIP_WATCHLIST_CAP / 1000).",
     )
     parser.add_argument(
         "--keep-days",

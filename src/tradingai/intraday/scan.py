@@ -48,6 +48,10 @@ def _row_payload(
         "reclaim_vwap": bounce.reclaim_vwap,
         "reclaim_open": bounce.reclaim_open,
         "first_bar_green": bounce.first_bar_green,
+        "trough_hammer": bounce.trough_hammer,
+        "bullish_engulfing": bounce.bullish_engulfing,
+        "bearish_engulfing": bounce.bearish_engulfing,
+        "morning_star": bounce.morning_star,
         "momentum_15m_pct": bounce.momentum_15m_pct,
         "reasons": list(dict.fromkeys([*dip.reasons, *bounce.reasons])),
     }

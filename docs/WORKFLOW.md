@@ -31,7 +31,9 @@ L4 chooses the playground; L5 ranks names inside it; fusion still blends tech/ne
 
 ## 1. Collect and store data
 
-Watchlist comes from `TRADINGAI_SYNC_TICKERS` in `.env`.
+Watchlist comes from the packaged ~1000-name US equity file
+(`src/tradingai/data/universe/us_equities_1000.txt`), or `TRADINGAI_SYNC_TICKERS` /
+`TRADINGAI_SYNC_TICKERS_FILE` in `.env` when set.
 
 | Step | Command | Writes |
 |------|---------|--------|

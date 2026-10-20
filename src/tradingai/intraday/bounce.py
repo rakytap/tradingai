@@ -4,11 +4,16 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from tradingai.intraday.candles import assess_candle_patterns
 from tradingai.intraday.config import (
     DEFAULT_FIRST_BAR_GREEN_PENALTY,
     DEFAULT_FIRST_BAR_MINUTES,
     DEFAULT_LOWER_LOW_BARS,
     DEFAULT_MOMENTUM_MINUTES,
+    get_candle_bearish_engulf_weight,
+    get_candle_bullish_engulf_weight,
+    get_candle_hammer_weight,
+    get_candle_min_rel_volume,
 )
 from tradingai.intraday.open_dip import OpenDipSignal, is_making_lower_lows, latest_vwap
 
@@ -28,6 +33,10 @@ class BounceAssessment:
     first_bar_green: bool
     momentum_15m_pct: float | None
     reasons: tuple[str, ...]
+    trough_hammer: bool = False
+    bullish_engulfing: bool = False
+    bearish_engulfing: bool = False
+    morning_star: bool = False
 
 
 def opening_window(bars: pd.DataFrame, *, minutes: int = DEFAULT_FIRST_BAR_MINUTES) -> pd.DataFrame:
@@ -119,7 +128,34 @@ def assess_bounce(
         reasons.append(f"lower_lows_last_{lower_low_bars}")
 
     score = 0.15 * dip_component + vwap_component + open_component + mom_component
-    # Opening green then selling off is a weaker bounce setup — penalize.
+
+    candles = assess_candle_patterns(
+        bars,
+        trough_time=dip.trough_time,
+        last_price=last_price,
+        vwap=vwap,
+        first_bar_minutes=first_bar_minutes,
+        hammer_weight=get_candle_hammer_weight(),
+        bullish_engulf_weight=get_candle_bullish_engulf_weight(),
+        bearish_engulf_weight=get_candle_bearish_engulf_weight(),
+        min_rel_volume=get_candle_min_rel_volume(),
+    )
+    score += candles.score_delta
+    reasons.extend(candles.reasons)
+
+    # Shift so reclaiming setups land positive (before green-open penalty).
+    if (
+        reclaim_vwap
+        and reclaim_open
+        and momentum_positive
+        and not free_fall
+        and not green_open
+    ):
+        score = max(score, 0.35)
+        if candles.trough_hammer or candles.bullish_engulfing or candles.morning_star:
+            score = max(score, 0.45)
+
+    # Opening green then selling off is a weaker bounce — apply last so it differentiates.
     if green_open:
         penalty = max(0.0, float(first_bar_green_penalty))
         score -= penalty
@@ -128,9 +164,6 @@ def assess_bounce(
         )
 
     score = max(-1.0, min(1.0, score))
-    # Shift so reclaiming setups land positive (still after green-open penalty).
-    if reclaim_vwap and reclaim_open and momentum_positive and not free_fall and not green_open:
-        score = max(score, 0.35)
 
     if free_fall or (not reclaim_vwap and not reclaim_open and not momentum_positive):
         status: Status = "plunging"
@@ -159,4 +192,8 @@ def assess_bounce(
         first_bar_green=green_open,
         momentum_15m_pct=round(momentum, 4),
         reasons=tuple(reasons),
+        trough_hammer=candles.trough_hammer,
+        bullish_engulfing=candles.bullish_engulfing or candles.morning_star,
+        bearish_engulfing=candles.bearish_engulfing,
+        morning_star=candles.morning_star,
     )

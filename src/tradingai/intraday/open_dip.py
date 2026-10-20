@@ -22,6 +22,10 @@ class OpenDipSignal:
     session_open: float | None
     window_minutes: int
     reasons: tuple[str, ...]
+    trough_time: pd.Timestamp | None = None
+    trough_hammer: bool = False
+    bullish_engulfing: bool = False
+    candle_reasons: tuple[str, ...] = ()
 
 
 def detect_open_dip(
@@ -64,7 +68,9 @@ def detect_open_dip(
     if window.empty:
         window = bars.iloc[: max(1, int(window_minutes))]
 
-    trough = float(window["low"].min())
+    trough_idx = window["low"].astype(float).idxmin()
+    trough = float(window.loc[trough_idx, "low"])
+    trough_time = pd.Timestamp(trough_idx)
     session_open = float(bars["open"].iloc[0])
     dip = (trough / prior_close - 1.0) * 100.0
     threshold = -abs(float(dip_pct))
@@ -73,6 +79,12 @@ def detect_open_dip(
         reasons.append(f"trough {dip:.2f}% vs prior close (threshold {threshold:.2f}%)")
     else:
         reasons.append(f"dip {dip:.2f}% shallower than {threshold:.2f}%")
+
+    # Informational selloff quality (not a gate).
+    red = (window["close"].astype(float) < window["open"].astype(float)).sum()
+    red_frac = float(red) / float(len(window)) if len(window) else 0.0
+    if qualifies:
+        reasons.append(f"red_body_fraction={red_frac:.2f}")
 
     return OpenDipSignal(
         ticker=ticker.upper(),
@@ -83,6 +95,7 @@ def detect_open_dip(
         session_open=round(session_open, 6),
         window_minutes=int(window_minutes),
         reasons=tuple(reasons),
+        trough_time=trough_time if qualifies else None,
     )
 
 

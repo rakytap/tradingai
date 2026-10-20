@@ -34,6 +34,7 @@ tradingai-mcp = "tradingai.server:main"
 tradingai-news-mcp = "tradingai.news.server:main"
 tradingai-regime-mcp = "tradingai.regime.server:main"
 tradingai-predict-mcp = "tradingai.predict.server:main"
+tradingai-ibkr-mcp = "tradingai.ibkr.server:main"
 tradingai-predict-eval = "tradingai.predict.evaluation.runner:main"
 tradingai-tune-fusion = "tradingai.predict.jobs.tune_fusion_weights:main"
 tradingai-predict-batch = "tradingai.predict.jobs.generate_predictions:main"
@@ -56,6 +57,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tradingai"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/tradingai/data/universe/us_equities_1000.txt" = "tradingai/data/universe/us_equities_1000.txt"
+"src/tradingai/data/schema.sql" = "tradingai/data/schema.sql"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

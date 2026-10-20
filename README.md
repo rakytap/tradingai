@@ -12,7 +12,7 @@ For the condensed **data → train → predict → portfolio** ops loop (L1–L5
 
 ### What this environment does
 
-The project runs **four separate MCP servers** that Cursor can call as tools:
+The project runs **five separate MCP servers** that Cursor can call as tools:
 
 | MCP server | Role |
 |------------|------|
@@ -20,8 +20,9 @@ The project runs **four separate MCP servers** that Cursor can call as tools:
 | `tradingai-news` | News, filings, analyst actions, and sentiment scoring |
 | `tradingai-regime` | Macro market regime (bull/bear/sideways, volatility overlay) |
 | `tradingai-predict` | Fuses the three signals above into probabilities and learns from history |
+| `tradingai-ibkr` | IBKR TWS fills + equity buy/sell (paper/live; dry-run by default) |
 
-The predict server is the only one that **persists data long-term**. The others fetch live data on demand (with short in-memory caches).
+The predict server is the only one that **persists data long-term**. The others fetch live data on demand (with short in-memory caches). Order placement via `tradingai-ibkr` talks to TWS/Gateway, not Postgres.
 
 ### Architecture overview
 
@@ -36,6 +37,7 @@ flowchart TB
         News[tradingai-news]
         Regime[tradingai-regime]
         Predict[tradingai-predict]
+        Ibkr[tradingai-ibkr]
     end
 
     subgraph external [Live data sources]
@@ -43,6 +45,7 @@ flowchart TB
         SEC[SEC EDGAR]
         RSS[RSS feeds]
         FRED[FRED API optional]
+        TWS[IBKR TWS or Gateway]
     end
 
     subgraph postgres [PostgreSQL tradingai or tradingai_dev]
@@ -56,6 +59,7 @@ flowchart TB
     Agent --> News
     Agent --> Regime
     Agent --> Predict
+    Agent --> Ibkr
 
     Tech --> YF
     News --> YF
@@ -69,6 +73,7 @@ flowchart TB
     Predict --> Stocks
     Predict --> Prices
     Predict --> Preds
+    Ibkr --> TWS
 
     SyncStocks[tradingai-sync-stocks] --> Stocks
     SyncPrices[tradingai-sync-prices] --> Prices
@@ -129,7 +134,8 @@ Edit [`.env`](.env) (copied from [`.env.example`](.env.example)):
 | `TRADINGAI_L3_NEWS_SPILL_ALPHA` | Spill blend weight fallback in `[0, 1]` (default `0.25`); overridden by `l3_news_spill_alpha` in news scoring JSON when enabled |
 | `TRADINGAI_ENV` | `dev` or `prod` — selects local DB when URL is unset (`dev` → `tradingai_dev`, `prod` → `tradingai`; default `prod`) |
 | `TRADINGAI_DATABASE_URL` | Optional explicit PostgreSQL URL (overrides `TRADINGAI_ENV`) |
-| `TRADINGAI_SYNC_TICKERS` | Watchlist for data sync jobs |
+| `TRADINGAI_SYNC_TICKERS` | Optional comma override for sync universe (default: packaged ~1000 US equities file) |
+| `TRADINGAI_SYNC_TICKERS_FILE` | Optional path override for the equity universe file |
 
 MCP servers and CLI jobs read these from [`.env`](.env) (loaded via [`.cursor/mcp.json`](.cursor/mcp.json)). Restart MCP servers after changing `TRADINGAI_ENV`.
 
@@ -276,7 +282,7 @@ tradingai-sync-news
 | `tradingai-sync-ticker-kg` | Upserts curated L3 entity graph into Postgres (`--preserve-overlays` default) | `ticker_kg_nodes` |
 | `tradingai-scan-open-dip` | L0 alert scan: morning open dips + bounce / reclaim status | stdout JSON |
 
-**Tickers synced:** Defined by `TRADINGAI_SYNC_TICKERS` in `.env` (default: `AAPL,MSFT,NVDA,AMD,INTC,GOOGL,META,TSLA,SPY`).
+**Tickers synced:** Packaged `src/tradingai/data/universe/us_equities_1000.txt` (~1000 US liquid equities), unless `TRADINGAI_SYNC_TICKERS` or `TRADINGAI_SYNC_TICKERS_FILE` overrides it in `.env`.
 
 **Re-run schedule:** Prices daily (before evaluation); stocks weekly; news daily or on demand.
 
@@ -286,12 +292,14 @@ tradingai-sync-news
 
 **Purpose:** Let the Cursor AI agent call analysis and prediction tools directly from chat.
 
-The project ships [`.cursor/mcp.json`](.cursor/mcp.json) with four server entries. Each points to a console script in your Python environment and loads [`.env`](.env).
+The project ships [`.cursor/mcp.json`](.cursor/mcp.json) with five server entries. Each points to a console script in your Python environment and loads [`.env`](.env).
 
 1. Open **Cursor → Customize → MCP**
-2. Enable `tradingai`, `tradingai-news`, `tradingai-regime`, `tradingai-predict`
-3. Restart Cursor if tools do not appear
+2. Enable `tradingai`, `tradingai-news`, `tradingai-regime`, `tradingai-predict`, `tradingai-ibkr`
+3. Restart MCP servers (or Cursor) after `pip install -e .` or `.env` changes so tools reload
 4. Check **Output → MCP Logs** for startup errors
+
+**IBKR orders:** `buy_stock` / `sell_stock` default to `dry_run=true`. Live submits need TWS/Gateway API on (paper **7497** / live **7496**), `TRADINGAI_IBKR_ALLOW_ORDERS=1` in `.env`, and `dry_run=false`. Cap size with `TRADINGAI_IBKR_MAX_ORDER_SHARES` (default 1000).
 
 **Where data is stored:** MCP servers are stateless processes. They read/write Postgres only when predict tools are called. Short-lived caches (15 minutes) exist in memory for yfinance/FRED macro data — not on disk.
 
@@ -709,6 +717,26 @@ The agent should call `get_prediction_track_record` or `get_segment_calibration`
 | `rank_sector_candidates` | L5 ranks inside L4 bullish sectors |
 | `scan_open_dip_bounces` | L0 intraday open-dip bounce scan (DB bars from IBKR sync; alert only) |
 
+### `tradingai-ibkr` — IBKR TWS executions and orders
+
+Requires TWS or IB Gateway with the socket API enabled. Uses `TRADINGAI_IBKR_HOST` / `TRADINGAI_IBKR_PORT` / `TRADINGAI_IBKR_MCP_CLIENT_ID` (defaults to sync client id + 1).
+
+| Tool | Description |
+|------|-------------|
+| `get_last_trades` | Recent fills via `reqExecutions` (`limit`, `side` buy/sell/all, optional `symbol` / `account`) |
+| `buy_stock` | Buy SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
+| `sell_stock` | Sell SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
+
+Example prompts:
+
+```
+Use tradingai-ibkr to get the last 25 trades.
+Use tradingai-ibkr buy_stock for AAPL quantity 1 dry_run true.
+Use tradingai-ibkr sell_stock for MSFT quantity 5 order_type LMT limit_price 530 dry_run true.
+```
+
+After changing order-related env vars, restart the `tradingai-ibkr` MCP server.
+
 ---
 
 ## Configuration reference
@@ -739,6 +767,7 @@ tradingai-mcp
 tradingai-news-mcp
 tradingai-regime-mcp
 tradingai-predict-mcp
+tradingai-ibkr-mcp
 ```
 
 ### Run tests

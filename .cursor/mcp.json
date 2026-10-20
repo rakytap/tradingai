@@ -27,6 +27,13 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env"
+    },
+    "tradingai-ibkr": {
+      "type": "stdio",
+      "command": "/home/rakytap/.conda/envs/stocks/bin/tradingai-ibkr-mcp",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env"
     }
   }
 }
