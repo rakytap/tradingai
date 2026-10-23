@@ -109,6 +109,25 @@ def get_forward_return(
     return ret
 
 
+def list_closes(
+    ticker: str,
+    *,
+    database_url: str | None = None,
+) -> list[tuple[date, float]]:
+    """Finite daily closes for one ticker, oldest first."""
+    with get_connection(database_url) as conn:
+        rows = conn.execute(
+            """
+            SELECT date, close
+            FROM daily_prices
+            WHERE ticker = %s
+            ORDER BY date ASC
+            """,
+            (ticker.upper(),),
+        ).fetchall()
+    return [(row[0], float(row[1])) for row in rows if is_finite_number(row[1])]
+
+
 def delete_nonfinite_daily_prices(*, database_url: str | None = None) -> int:
     """Remove OHLC rows with non-finite prices (e.g. synced NaN closes)."""
     with get_connection(database_url) as conn:

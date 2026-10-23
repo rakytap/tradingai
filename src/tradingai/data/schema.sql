@@ -135,3 +135,19 @@ CREATE TABLE IF NOT EXISTS intraday_bars (
 
 CREATE INDEX IF NOT EXISTS idx_intraday_bars_ticker_time
     ON intraday_bars(ticker, bar_time DESC);
+
+-- Multi-day 1m history for dip-recovery training. Live sync prunes
+-- intraday_bars only; this table is left intact.
+CREATE TABLE IF NOT EXISTS intraday_history_bars (
+    ticker TEXT NOT NULL,
+    bar_time TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION,
+    high DOUBLE PRECISION,
+    low DOUBLE PRECISION,
+    close DOUBLE PRECISION,
+    volume DOUBLE PRECISION,
+    PRIMARY KEY (ticker, bar_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_intraday_history_bars_ticker_time
+    ON intraday_history_bars(ticker, bar_time DESC);

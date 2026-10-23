@@ -22,6 +22,7 @@ dependencies = [
     "xgboost>=2.0",
     "joblib>=1.3",
     "ib_insync>=0.9.86",
+    "pyarrow>=15",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,8 @@ tradingai-predict-batch = "tradingai.predict.jobs.generate_predictions:main"
 tradingai-paper-portfolio = "tradingai.predict.jobs.build_paper_portfolio:main"
 tradingai-paper-portfolio-ibkr-rebalance = "tradingai.predict.jobs.build_paper_portfolio_ibkr_rebalance:main"
 tradingai-sync-intraday = "tradingai.intraday.jobs.sync_intraday_bars:main"
+tradingai-backfill-intraday = "tradingai.intraday.jobs.backfill_intraday_bars:main"
+tradingai-build-dip-dataset = "tradingai.intraday.jobs.build_dip_dataset:main"
 tradingai-scan-open-dip = "tradingai.intraday.jobs.scan_open_dip:main"
 tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
 tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"

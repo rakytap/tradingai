@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Iterator
 
 import pandas as pd
 
 from tradingai.intraday.bars import normalize_intraday_index
 from tradingai.intraday.config import (
+    ET,
     get_bar_interval,
     get_bar_period,
     get_ibkr_client_id,
@@ -115,6 +117,36 @@ def connect_ib(
             ib.disconnect()
 
 
+def format_ib_end_datetime(value: datetime | str | None) -> str:
+    """Format an inclusive request end for IB ``endDateTime``.
+
+    Naive datetimes are interpreted as America/New_York. Aware datetimes are
+    converted to UTC, which is the form ``ib_insync`` sends for datetimes.
+    ``None`` or ``""`` means "now".
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ET)
+    utc = value.astimezone(timezone.utc)
+    return utc.strftime("%Y%m%d %H:%M:%S UTC")
+
+
+def qualify_equity(ib, ticker: str):
+    """Qualify a SMART USD stock contract. Share classes use an IB space."""
+    from ib_insync import Stock
+
+    symbol = ticker.upper().strip()
+    ib_symbol = symbol.replace(".", " ").replace("-", " ")
+    contract = Stock(ib_symbol, "SMART", "USD")
+    qualified = ib.qualifyContracts(contract)
+    if not qualified:
+        raise ValueError(f"IBKR could not qualify contract for {symbol}.")
+    return qualified[0]
+
+
 def bars_to_dataframe(bars) -> pd.DataFrame:
     """Convert ib_insync BarDataList to normalized OHLCV DataFrame."""
     if not bars:
@@ -142,22 +174,20 @@ def fetch_intraday_ohlcv_ibkr(
     *,
     period: str | None = None,
     interval: str | None = None,
+    end_datetime: datetime | str | None = None,
+    contract=None,
 ) -> pd.DataFrame:
-    """Fetch historical OHLCV for one equity via an open IB connection."""
-    from ib_insync import Stock
+    """Fetch historical OHLCV for one equity via an open IB connection.
 
-    symbol = ticker.upper().strip()
-    # IBKR share classes use a space (BRK B); Yahoo-style files use BRK.B / BRK-B.
-    ib_symbol = symbol.replace(".", " ").replace("-", " ")
+    ``end_datetime`` sets IB ``endDateTime``. Leave it empty to request up to
+    now. Pass a pre-qualified ``contract`` to skip a qualify call per day.
+    """
     duration = period_to_ib_duration(period)
     bar_size = interval_to_ib_bar_size(interval)
-    contract = Stock(ib_symbol, "SMART", "USD")
-    qualified = ib.qualifyContracts(contract)
-    if not qualified:
-        raise ValueError(f"IBKR could not qualify contract for {symbol}.")
+    qualified = contract if contract is not None else qualify_equity(ib, ticker)
     bars = ib.reqHistoricalData(
-        qualified[0],
-        endDateTime="",
+        qualified,
+        endDateTime=format_ib_end_datetime(end_datetime),
         durationStr=duration,
         barSizeSetting=bar_size,
         whatToShow="TRADES",

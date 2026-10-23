@@ -7,3 +7,4 @@ def test_schema_file_exists_and_defines_core_tables():
     assert "CREATE TABLE IF NOT EXISTS daily_prices" in schema
     assert "CREATE TABLE IF NOT EXISTS news_events" in schema
     assert "CREATE TABLE IF NOT EXISTS predictions" in schema
+    assert "CREATE TABLE IF NOT EXISTS intraday_history_bars" in schema

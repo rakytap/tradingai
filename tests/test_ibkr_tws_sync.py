@@ -86,9 +86,42 @@ def test_fetch_intraday_ohlcv_ibkr_uses_connection(monkeypatch):
     assert calls["symbol"] == "AAPL"
     assert calls["kwargs"]["durationStr"] == "5 D"
     assert calls["kwargs"]["barSizeSetting"] == "1 min"
+    assert calls["kwargs"]["endDateTime"] == ""
     assert calls["kwargs"]["useRTH"] is True
     assert len(frame) == 1
     assert float(frame.iloc[0]["close"]) == 10.5
+
+
+def test_fetch_intraday_ohlcv_ibkr_passes_end_datetime():
+    calls: dict = {}
+
+    class FakeIB:
+        def reqHistoricalData(self, contract, **kwargs):
+            calls["kwargs"] = kwargs
+            calls["contract"] = contract
+            return [
+                SimpleNamespace(
+                    date=datetime(2026, 10, 14, 9, 30, tzinfo=ET),
+                    open=1.0,
+                    high=1.1,
+                    low=0.9,
+                    close=1.0,
+                    volume=5,
+                )
+            ]
+
+    end = datetime(2026, 10, 14, 16, 0, tzinfo=ET)
+    ibkr_tws.fetch_intraday_ohlcv_ibkr(
+        FakeIB(),
+        "AAPL",
+        period="1d",
+        interval="1m",
+        end_datetime=end,
+        contract="already-qualified",
+    )
+    assert calls["contract"] == "already-qualified"
+    assert calls["kwargs"]["endDateTime"] == "20261014 20:00:00 UTC"
+    assert calls["kwargs"]["durationStr"] == "1 D"
 
 
 def test_sync_intraday_bars_uses_ibkr(monkeypatch):
