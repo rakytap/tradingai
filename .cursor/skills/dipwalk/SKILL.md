@@ -15,9 +15,11 @@ disable-model-invocation: true
 
 Traverse the stock universe in a **randomized order**, visiting each equity
 **once per run**. For each ticker: sync intraday bars, then analyze the open-dip
-bounce. Export hits to a Markdown file. Include any stock whose dip is **larger
-than 4%** (`dip_pct <= -4.0`), regardless of status (`reclaiming`,
-`stabilizing`, or `plunging` / falling).
+bounce. **Export incrementally during the run**: as soon as a ticker finishes
+analysis and meets the criteria, append it to the Markdown file (do **not**
+buffer hits until the end). Include any stock whose dip is **larger than 4%**
+(`dip_pct <= -4.0`), regardless of status (`reclaiming`, `stabilizing`, or
+`plunging` / falling).
 
 ## Relation to `/dipbatch`
 
@@ -30,7 +32,8 @@ Green column). Differences:
 | Order | Sorted batches of 50 | **Shuffled** full equity list |
 | Unit of work | Batch sync + bullish subset scan | **One ticker** sync + scan |
 | Sector filter | Bullish-sector only for scan | **Full** non-ETF sync universe |
-| Output | Chat tables per batch + summary | **Markdown file** + brief chat summary |
+| Output | Chat tables per batch + summary | **Live-updated Markdown file** + brief chat summary |
+| Export timing | After each batch | **Immediately after each qualifying ticker** (append+flush) |
 | Export filter | All candidates (any dip ≥ threshold in scan) | Only rows with **`dip_pct <= -4.0`**, all statuses |
 
 ## Steps
@@ -58,9 +61,9 @@ Green column). Differences:
    - Default: `data/dipwalk/dipwalk_YYYY-MM-DD_HHMM_ET.md` (session day + time in America/New_York)
    - Or a path the user specifies
 
-   Write the MD header immediately (title, session day, universe size, seed if
-   any, dip threshold `-4.0%`). Append rows as hits are found (do not wait until
-   the end to create the file).
+   **Create the Markdown file before the walk starts.** Write the header and an
+   empty hits table (column header row) immediately. Keep the file open for
+   append (or reopen in append mode) for the whole run.
 
 3. **For each ticker `T` in shuffled order** (1-based index `i/N`):
 
@@ -74,7 +77,7 @@ Green column). Differences:
 
    **Fail-fast on this ticker only if sync is wholesale-broken for that call:**
    - Process crash / non-zero exit **and** no usable JSON → **stop the run**
-     (TWS likely down); keep the MD file with what was already written
+     (TWS likely down); keep the MD file with whatever was already exported
    - `synced <= 0` or `bars_written <= 0` → note skip, **continue** to next ticker
    - Per-ticker qualify/errors in JSON → note and **continue**
 
@@ -87,14 +90,20 @@ Green column). Differences:
    Or `evaluate_ticker(T, prefer_db=True)`. Collect the row from `candidates`
    **or** `plunging` (falling) if present.
 
-   **3c. Export filter:** if a row exists and `dip_pct <= -4.0`, append it to the
-   Markdown file (and optionally print a one-line chat note). Include
-   reclaiming, stabilizing, **and** plunging. Keep green-open names.
+   **3c. Export immediately if criteria met (required — during the run):**
+   - After this ticker’s analysis finishes, if a row exists and
+     `dip_pct <= -4.0`, **append that row to the Markdown hits table right now**
+     (before syncing/scanning the next ticker).
+   - `flush` / fsync so the file on disk is readable mid-run.
+   - Include reclaiming, stabilizing, **and** plunging. Keep green-open names.
+   - Do **not** accumulate hits only in memory for a single end-of-run write.
+   - Optionally print a one-line chat note for the hit.
 
    **3d. Progress:** every 25 tickers (or on each export hit), print a short
    progress line: `i/N visited, hits=H, last_hit=TICKER`.
 
-4. **Finalize the Markdown file** with a summary section:
+4. **Finalize the Markdown file** (after all tickers) with a summary section
+   appended (hits are already in the file from step 3c):
 
    - Tickers visited / skipped / sync errors
    - Hit count (`dip_pct <= -4`)
@@ -104,8 +113,8 @@ Green column). Differences:
 5. **Chat summary:** path to the MD file, hit count, deepest few tickers
    (`dip_pct` ascending), and note that green opens were kept.
 
-## Markdown table columns (append order = discovery order; optional final
-re-sort section by `dip_pct` ascending)
+## Markdown table columns (append order = discovery / export order; then a
+final sorted section by `dip_pct` ascending)
 
 | Column | Source |
 |--------|--------|
@@ -128,13 +137,15 @@ Example row block to append:
 | TICKER | -5.12 | 0.42 | reclaiming | Y |  |  | 12.34 | ... |
 ```
 
-At the end, rewrite or append a **Sorted by dip depth** section with the same
-hits ordered by `dip_pct` ascending.
+After the walk, append a **Sorted by dip depth** section with the same hits
+ordered by `dip_pct` ascending (the live table above stays in discovery order).
 
 ## Notes
 
+- **Incremental export is mandatory:** write each qualifying hit to the MD file
+  immediately after that stock is analyzed; the file must grow during the run.
 - Dip threshold is **hard**: only export if `dip_pct <= -4.0` (more than 4% below prior close). Do not export milder dips.
 - `plunging` counts as falling — include it when the dip threshold is met.
-- Full-universe one-by-one sync is slow (~1000 IBKR requests). Prefer leaving it running; resume from `/tmp/dipwalk_order.txt` + a progress index if interrupted.
+- Full-universe one-by-one sync is slow (~1000 IBKR requests). Prefer leaving it running; resume from `/tmp/dipwalk_order.txt` + a progress index if interrupted (hits already on disk remain valid).
 - `tradingai-sync-intraday` often exits 0 with per-ticker errors — parse JSON for decisions.
 - Alert/scan only — not financial advice.
