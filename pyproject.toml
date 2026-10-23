@@ -29,6 +29,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+torch = [
+    "torch>=2.2",
+]
 
 [project.scripts]
 tradingai-mcp = "tradingai.server:main"
@@ -44,6 +47,8 @@ tradingai-paper-portfolio-ibkr-rebalance = "tradingai.predict.jobs.build_paper_p
 tradingai-sync-intraday = "tradingai.intraday.jobs.sync_intraday_bars:main"
 tradingai-backfill-intraday = "tradingai.intraday.jobs.backfill_intraday_bars:main"
 tradingai-build-dip-dataset = "tradingai.intraday.jobs.build_dip_dataset:main"
+tradingai-train-dip-model = "tradingai.intraday.jobs.train_dip_model:main"
+tradingai-validate-dip-model = "tradingai.intraday.jobs.validate_dip_model:main"
 tradingai-scan-open-dip = "tradingai.intraday.jobs.scan_open_dip:main"
 tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
 tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"

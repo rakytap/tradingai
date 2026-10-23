@@ -9,9 +9,12 @@ import pandas as pd
 from tradingai.intraday.dip_dataset import (
     assemble_cuts,
     build_cut,
+    count_level_crossings,
     find_dip_anchor,
     label_cut,
+    recent_session_window,
     sample_cut_ends,
+    target_sell_price_for_entry,
     write_dip_dataset,
 )
 from tradingai.intraday.jobs.backfill_intraday_bars import (
@@ -181,6 +184,56 @@ def test_label_cut_rise_after_trough_is_positive():
     )
     assert max_high == 110.0
     assert label == 1
+
+
+def test_count_level_crossings_close_to_close():
+    bars = _bars(
+        lows=[100.0, 101.0, 99.0, 101.5, 98.0],
+        closes=[100.0, 101.0, 99.0, 101.5, 98.0],
+    )
+    # Upward only: 100→101 and 99→101.5 (downward 101→99 / 101.5→98 ignored)
+    assert count_level_crossings(bars, 100.5) == 2
+    assert count_level_crossings(bars, 200.0) == 0
+
+
+def test_target_sell_price_above_entry():
+    entry = 100.0
+    sell_at = target_sell_price_for_entry(entry)
+    assert sell_at > entry
+
+
+def test_assemble_cuts_records_sell_crossings():
+    day0 = date(2026, 10, 13)
+    day1 = date(2026, 10, 14)
+    # Prior session oscillates across ~100.4 so crossings accumulate.
+    prior = _bars(
+        lows=[100.0, 101.0, 99.5, 101.2, 99.0] + [100.0] * 35,
+        closes=[100.0, 101.0, 99.5, 101.2, 99.0] + [100.0] * 35,
+        start=datetime(2026, 10, 13, 9, 30, tzinfo=ET),
+    )
+    bars = _recovery_session()
+    samples, _cut_bars, qualifying = assemble_cuts(
+        [
+            ("XYZ", day0, prior, 100.0),
+            ("XYZ", day1, bars, 100.0),
+        ],
+        dip_pct=4.0,
+        rise_pct=0.4,
+        cuts_before=1,
+        cuts_after=1,
+        min_horizon_minutes=5,
+        crossing_sessions=5,
+        seed=0,
+    )
+    assert qualifying == 1  # only day1 hits the dip
+    assert "sell_crossings_5d" in samples.columns
+    assert "target_sell_price" in samples.columns
+    assert (samples["target_sell_price"] > samples["entry_close"]).all()
+    assert (samples["sell_crossings_5d"] >= 0).all()
+    # Window helper truncates the current session at cut_end.
+    cut_end = samples.iloc[0]["cut_end"]
+    window = recent_session_window([prior, bars], cut_end, max_sessions=5)
+    assert window.index.max() <= cut_end
 
 
 def test_assemble_cuts_labels_match_future_high_and_keep_the_prefix():

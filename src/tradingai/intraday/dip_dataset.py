@@ -5,9 +5,12 @@ Every sample comes from a regular session that eventually trades at least
 before and after the first bar that prints that dip. The label uses only bars
 after the cut, measured from the cut-end close:
 
-* ``-1`` — still falling (a later bar prints a new session low)
-* ``1`` — recovers: a later high is ``rise_pct`` above the cut-end close
-* ``0`` — neither (no new low after the cut, and no qualifying rise)
+* ``label``: ``-1`` still falling; ``1`` recovers (``rise_pct`` above cut close);
+  ``0`` neither.
+* ``sell_crossings_5d``: how many times 1m closes crossed *up through* the
+  fee-aware target sell price (from ``entry_close`` / ``DEFAULT_TARGET_RETURN``)
+  over the last five RTH sessions through the cut (no post-cut lookahead).
+  Downward crosses do not count.
 """
 
 from __future__ import annotations
@@ -20,13 +23,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from collections import defaultdict, deque
+
 from tradingai.intraday.bars import filter_rth_session
+from tradingai.intraday.profit_target import (
+    DEFAULT_BUY_NOTIONAL_USD,
+    DEFAULT_TARGET_RETURN,
+    fee_aware_sell_price,
+)
 
 DEFAULT_DATASET_DIP_PCT = 4.0
 DEFAULT_DATASET_RISE_PCT = 0.4
 DEFAULT_CUTS_BEFORE = 4
 DEFAULT_CUTS_AFTER = 4
 DEFAULT_MIN_HORIZON_MINUTES = 15
+DEFAULT_CROSSING_SESSIONS = 5
 
 SAMPLE_COLUMNS = (
     "sample_id",
@@ -41,6 +52,8 @@ SAMPLE_COLUMNS = (
     "max_future_high",
     "rise_pct",
     "label",
+    "target_sell_price",
+    "sell_crossings_5d",
 )
 BAR_COLUMNS = (
     "sample_id",
@@ -237,6 +250,80 @@ def label_cut(
     return label, max_high
 
 
+def target_sell_price_for_entry(
+    entry_close: float,
+    *,
+    buy_notional_usd: float = DEFAULT_BUY_NOTIONAL_USD,
+    net_return: float = DEFAULT_TARGET_RETURN,
+) -> float:
+    """Fee-aware sell level that nets ``net_return`` from ``entry_close``."""
+    price = float(entry_close)
+    if price <= 0.0 or not math.isfinite(price):
+        raise ValueError("entry_close must be a positive finite price.")
+    result = fee_aware_sell_price(
+        price,
+        buy_notional_usd=float(buy_notional_usd),
+        net_return=float(net_return),
+    )
+    return float(result["sell_price"])
+
+
+def count_level_crossings(bars: pd.DataFrame, level: float) -> int:
+    """Count upward close-to-close crosses of ``level`` (below → above).
+
+    Only transitions from a below-level close to an above-level close count.
+    Downward crosses (above → below) are ignored. Exact touches
+    (close == level) do not change side until price leaves to a non-zero side.
+    """
+    if bars is None or bars.empty or "close" not in bars.columns:
+        return 0
+    if level is None or not math.isfinite(level):
+        return 0
+    closes = _sorted_bars(bars)["close"].astype(float)
+    closes = closes[np.isfinite(closes.to_numpy())]
+    if len(closes) < 2:
+        return 0
+    signs = np.sign(closes.to_numpy() - float(level))
+    crossings = 0
+    prev = 0.0
+    for sign in signs:
+        if sign == 0.0:
+            continue
+        if prev != 0.0 and sign != prev and sign > 0.0:
+            crossings += 1
+        prev = float(sign)
+    return int(crossings)
+
+
+def recent_session_window(
+    session_history: list[pd.DataFrame],
+    cut_end: pd.Timestamp,
+    *,
+    max_sessions: int = DEFAULT_CROSSING_SESSIONS,
+) -> pd.DataFrame:
+    """Last ``max_sessions`` RTH frames, with the current session cut at ``cut_end``.
+
+    Older sessions are included in full. The newest frame is truncated to bars
+    at or before ``cut_end`` so the crossing count has no post-cut lookahead.
+    """
+    if not session_history:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    window = list(session_history[-max(1, int(max_sessions)) :])
+    pieces: list[pd.DataFrame] = []
+    for index, frame in enumerate(window):
+        ordered = _sorted_bars(frame)
+        if ordered.empty:
+            continue
+        if index == len(window) - 1:
+            end = _as_index_timestamp(cut_end, ordered.index)
+            ordered = ordered.loc[ordered.index <= end]
+        if not ordered.empty:
+            pieces.append(ordered[["open", "high", "low", "close", "volume"]])
+    if not pieces:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    return pd.concat(pieces).sort_index()
+
+
 def split_rth_sessions(bars: pd.DataFrame) -> list[tuple[date, pd.DataFrame]]:
     """Split a ticker history into regular-session frames keyed by ET date."""
     work = _sorted_bars(bars)
@@ -260,19 +347,30 @@ def assemble_cuts(
     cuts_before: int = DEFAULT_CUTS_BEFORE,
     cuts_after: int = DEFAULT_CUTS_AFTER,
     min_horizon_minutes: int = DEFAULT_MIN_HORIZON_MINUTES,
+    crossing_sessions: int = DEFAULT_CROSSING_SESSIONS,
     seed: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     """Build sample and bar frames. The third value is the qualifying session count.
 
     ``sessions`` items are ``(ticker, session_date, rth_bars, prior_close)``.
     One seeded generator is advanced in the given session order.
+
+    ``sell_crossings_5d`` counts upward close-to-close crosses (below → above)
+    of the fee-aware target sell price (from ``entry_close`` /
+    ``DEFAULT_TARGET_RETURN``) over the last ``crossing_sessions`` RTH sessions
+    through ``cut_end``. Downward crosses do not count.
     """
     rng = np.random.default_rng(seed)
     sample_rows: list[dict] = []
     bar_rows: list[dict] = []
     qualifying = 0
     sample_id = 0
+    session_histories: dict[str, deque[pd.DataFrame]] = defaultdict(
+        lambda: deque(maxlen=max(1, int(crossing_sessions)))
+    )
     for ticker, session_day, bars, prior_close in sessions:
+        key = ticker.upper()
+        session_histories[key].append(bars)
         anchor = find_dip_anchor(bars, prior_close, dip_pct)
         if anchor is None:
             continue
@@ -288,14 +386,22 @@ def assemble_cuts(
         if not cuts:
             continue
         ordered = _sorted_bars(bars)
+        history = list(session_histories[key])
         for cut_end, side in cuts:
             entry_close = float(ordered.loc[cut_end, "close"])
             label, max_high = label_cut(ordered, cut_end, entry_close, rise_pct)
+            sell_price = target_sell_price_for_entry(entry_close)
+            crossing_bars = recent_session_window(
+                history,
+                cut_end,
+                max_sessions=crossing_sessions,
+            )
+            crossings = count_level_crossings(crossing_bars, sell_price)
             sample_id += 1
             sample_rows.append(
                 {
                     "sample_id": sample_id,
-                    "ticker": ticker.upper(),
+                    "ticker": key,
                     "session_date": session_day,
                     "cut_end": cut_end,
                     "side": side,
@@ -306,6 +412,8 @@ def assemble_cuts(
                     "max_future_high": None if max_high is None else round(max_high, 6),
                     "rise_pct": float(rise_pct),
                     "label": int(label),
+                    "target_sell_price": round(sell_price, 6),
+                    "sell_crossings_5d": int(crossings),
                 }
             )
             cut = build_cut(ordered, prior_close, cut_end)
