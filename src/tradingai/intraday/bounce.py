@@ -143,10 +143,9 @@ def assess_bounce(
     score += candles.score_delta
     reasons.extend(candles.reasons)
 
-    # Shift so reclaiming setups land positive (before green-open penalty).
+    # Shift so VWAP-reclaim setups land positive (before green-open penalty).
     if (
         reclaim_vwap
-        and reclaim_open
         and momentum_positive
         and not free_fall
         and not green_open
@@ -165,9 +164,10 @@ def assess_bounce(
 
     score = max(-1.0, min(1.0, score))
 
-    if free_fall or (not reclaim_vwap and not reclaim_open and not momentum_positive):
+    # Status uses VWAP reclaim only (not session-open reclaim).
+    if free_fall or (not reclaim_vwap and not momentum_positive):
         status: Status = "plunging"
-    elif reclaim_vwap or reclaim_open:
+    elif reclaim_vwap:
         status = "reclaiming"
     else:
         status = "stabilizing"

@@ -1,1 +1,1 @@
-"""Autonomous open-dip simulator over Alpaca 5m history."""
+"""Autonomous open-dip simulator over Alpaca 1m history."""

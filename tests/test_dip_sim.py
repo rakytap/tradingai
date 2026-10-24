@@ -27,7 +27,6 @@ from tradingai.sim.strategy import (
     OpenDipStrategy,
     StrategyParams,
     entry_rank_key,
-    is_clean_dip_shape,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -291,47 +290,8 @@ def test_broker_profit_band_0_2_to_0_4_pct():
     assert 0.2 <= move_pct <= 0.4
 
 
-def test_is_clean_dip_shape_allows_large_trend_moves():
-    # Depth 4 → budget 0.4. Large down then large up (trend) OK; wide bars OK.
-    bars = _five_min_session(
-        opens=[99.0, 96.0, 100.5],
-        highs=[102.0, 99.0, 103.0],
-        lows=[95.0, 94.0, 98.0],
-        closes=[99.0, 96.0, 100.5],
-    )
-    assert is_clean_dip_shape(
-        bars, prior_close=100.0, trough_price=96.0, max_oscillation_of_dip=0.10
-    )
-
-
-def test_is_clean_dip_shape_rejects_up_bounce_while_plunging():
-    # Depth 4 → budget 0.4; before trough, close jumps +1.0 (up oscillation).
-    bars = _five_min_session(
-        opens=[99.0, 97.0, 98.0, 96.0, 100.0],
-        highs=[99.5, 97.5, 98.5, 96.5, 100.5],
-        lows=[98.5, 96.5, 97.5, 95.5, 99.5],
-        closes=[99.0, 97.0, 98.0, 96.0, 100.0],
-    )
-    assert not is_clean_dip_shape(
-        bars, prior_close=100.0, trough_price=96.0, max_oscillation_of_dip=0.10
-    )
-
-
-def test_is_clean_dip_shape_rejects_pullback_while_reclaiming():
-    # Depth 4 → budget 0.4; after trough, close drops 1.0 (pullback).
-    bars = _five_min_session(
-        opens=[99.0, 96.0, 98.0, 97.0, 100.0],
-        highs=[99.5, 96.5, 98.5, 97.5, 100.5],
-        lows=[98.5, 95.5, 97.5, 96.5, 99.5],
-        closes=[99.0, 96.0, 98.0, 97.0, 100.0],
-    )
-    assert not is_clean_dip_shape(
-        bars, prior_close=100.0, trough_price=96.0, max_oscillation_of_dip=0.10
-    )
-
-
 def test_strategy_enters_on_dip_reclaiming():
-    # Prior 100; trough ~96 (-4%); later reclaim. Large trend steps OK.
+    # Prior 100; trough ~96 (-4%); later reclaim.
     n = 18  # 9:30 → ~10:55 in 5m steps
     closes = [97.0] * 6 + [98.0] * 4 + [100.5] * 8
     bars = _five_min_session(
@@ -348,7 +308,6 @@ def test_strategy_enters_on_dip_reclaiming():
         target_return=0.003,
         stop_loss=0.01,
         use_trail=False,
-        max_oscillation_of_dip=0.10,
     )
     strategy = OpenDipStrategy(params)
     as_of = bars.index[-1].to_pydatetime()
@@ -367,34 +326,6 @@ def test_strategy_enters_on_dip_reclaiming():
     move = (signal.limit_price / signal.buy_price - 1.0) * 100.0
     # Fee-aware limit is a bit above raw target; still near the 0.2–0.4% band.
     assert 0.2 <= move <= 1.0
-
-
-def test_strategy_rejects_pullback_on_reclaim():
-    # After trough, a ≥0.4 pullback fails clean-shape (budget 0.4).
-    closes = [97.0] * 6 + [98.0, 97.4, 98.5, 99.0] + [100.5] * 8
-    bars = _five_min_session(
-        opens=[99.0] + closes[:-1],
-        highs=[c + 0.5 for c in closes],
-        lows=[96.0] + [c - 0.5 for c in closes[1:]],
-        closes=closes,
-        volumes=[5000.0] * len(closes),
-    )
-    strategy = OpenDipStrategy(
-        StrategyParams(
-            dip_pct=2.0,
-            window_minutes=30,
-            require_status=("reclaiming",),
-            max_oscillation_of_dip=0.10,
-        )
-    )
-    signal = strategy.evaluate_entry(
-        "PULL",
-        bars,
-        prior_close=100.0,
-        session_day=date(2026, 10, 14),
-        as_of=bars.index[-1].to_pydatetime(),
-    )
-    assert signal is None
 
 
 def test_strategy_rejects_plunging():

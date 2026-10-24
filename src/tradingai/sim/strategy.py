@@ -14,7 +14,6 @@ from tradingai.sim.config import (
     DEFAULT_DIP_PCT,
     DEFAULT_DIP_WINDOW_MINUTES,
     DEFAULT_EXCLUDE_FIRST_BAR_GREEN,
-    DEFAULT_MAX_OSCILLATION_OF_DIP,
     DEFAULT_MAX_POSITIONS,
     DEFAULT_MIN_BOUNCE_SCORE,
     DEFAULT_REQUIRE_STATUS,
@@ -22,52 +21,6 @@ from tradingai.sim.config import (
     DEFAULT_TARGET_RETURN,
     DEFAULT_USE_TRAIL,
 )
-
-
-def is_clean_dip_shape(
-    bars: pd.DataFrame,
-    *,
-    prior_close: float,
-    trough_price: float,
-    max_oscillation_of_dip: float = DEFAULT_MAX_OSCILLATION_OF_DIP,
-) -> bool:
-    """True when counter-trend close steps stay below the oscillation budget.
-
-    Dip depth is ``|prior_close - trough_price|``. Budget is
-    ``max_oscillation_of_dip * depth``.
-
-    - **Plunging side** (steps ending at/before the trough bar): require
-      ``close[i] - close[i-1] < budget`` (limits upward bounces while falling).
-    - **Reclaiming side** (steps after the trough): require
-      ``close[i-1] - close[i] < budget`` (limits pullbacks while recovering).
-
-    Moves in the trend direction are unrestricted. Bar high-low width is not limited.
-    """
-    if bars is None or bars.empty or "close" not in bars.columns:
-        return False
-    depth = abs(float(prior_close) - float(trough_price))
-    if depth <= 0.0:
-        return False
-    budget = max(0.0, float(max_oscillation_of_dip)) * depth
-    closes = bars["close"].astype(float).to_numpy()
-    if len(closes) < 2:
-        return True
-    if "low" in bars.columns:
-        trough_pos = int(bars["low"].astype(float).to_numpy().argmin())
-    else:
-        trough_pos = int(closes.argmin())
-    for i in range(1, len(closes)):
-        prev_c = float(closes[i - 1])
-        cur_c = float(closes[i])
-        if i <= trough_pos:
-            # Plunging: close[i] - close[i-1] must stay below budget.
-            if cur_c - prev_c >= budget - 1e-12:
-                return False
-        else:
-            # Reclaiming: close[i-1] - close[i] must stay below budget.
-            if prev_c - cur_c >= budget - 1e-12:
-                return False
-    return True
 
 
 @dataclass(frozen=True)
@@ -86,7 +39,6 @@ class StrategyParams:
     use_trail: bool = DEFAULT_USE_TRAIL
     entry_cutoff_hour: int = 11
     entry_cutoff_minute: int = 0
-    max_oscillation_of_dip: float = DEFAULT_MAX_OSCILLATION_OF_DIP
 
     def to_dict(self) -> dict:
         return {
@@ -104,7 +56,6 @@ class StrategyParams:
             "use_trail": self.use_trail,
             "entry_cutoff_hour": self.entry_cutoff_hour,
             "entry_cutoff_minute": self.entry_cutoff_minute,
-            "max_oscillation_of_dip": self.max_oscillation_of_dip,
         }
 
 
@@ -221,22 +172,6 @@ class OpenDipStrategy:
             )
         bounce = assess_bounce(bars_as_of, dip)
         entry: EntrySignal | None = None
-        prior = (
-            float(dip.prior_close)
-            if dip.prior_close is not None
-            else (float(prior_close) if prior_close is not None else None)
-        )
-        trough = float(dip.trough_price) if dip.trough_price is not None else None
-        clean = (
-            prior is not None
-            and trough is not None
-            and is_clean_dip_shape(
-                bars_as_of,
-                prior_close=prior,
-                trough_price=trough,
-                max_oscillation_of_dip=params.max_oscillation_of_dip,
-            )
-        )
         buy_price = (
             float(bounce.last_price)
             if bounce.last_price is not None and bounce.last_price > 0
@@ -251,7 +186,6 @@ class OpenDipStrategy:
                 params.min_bounce_score is None
                 or bounce.bounce_score >= float(params.min_bounce_score)
             )
-            and clean
             and buy_price is not None
         ):
             targets = target_sell_price(
@@ -262,9 +196,6 @@ class OpenDipStrategy:
                 sell_trail=params.sell_trail,
             )
             reasons = list(dict.fromkeys([*dip.reasons, *bounce.reasons]))
-            reasons.append(
-                f"clean_shape max_oscillation_of_dip={params.max_oscillation_of_dip:.4f}"
-            )
             entry = EntrySignal(
                 ticker=symbol,
                 session_day=session_day,

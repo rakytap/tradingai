@@ -25,10 +25,6 @@ exclude_first_bar_green = false
 use_trail = true
 entry_cutoff_hour = 11
 entry_cutoff_minute = 0
-# Clean shape (fraction of dip depth):
-# plunging: close[i]-close[i-1] < budget; reclaiming: close[i-1]-close[i] < budget.
-# Trend-direction moves and bar high-low width are not limited.
-max_oscillation_of_dip = 0.10
 
 # IBKR-like historical query cost (virtual time in the entry scan; no wall-clock sleep).
 # Sustained hist pacing ≈ 60 requests / 10 minutes → ~10s between names.

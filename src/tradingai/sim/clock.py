@@ -10,7 +10,7 @@ from tradingai.intraday.jobs.backfill_intraday_bars import (
     last_completed_session_day,
     weekday_sessions,
 )
-from tradingai.sim.repository import list_sim_session_days, load_sim_bars_5m
+from tradingai.sim.repository import list_sim_session_days, load_sim_bars_1m
 
 
 def as_of_bars(bars: pd.DataFrame, as_of: datetime | pd.Timestamp) -> pd.DataFrame:
@@ -48,10 +48,10 @@ def load_session_timeline(
     *,
     database_url: str | None = None,
 ) -> list[pd.Timestamp]:
-    """Union of all 5m bar times for ``tickers`` on ``session_day``, sorted."""
+    """Union of all 1m bar times for ``tickers`` on ``session_day``, sorted."""
     times: set[pd.Timestamp] = set()
     for ticker in tickers:
-        bars = load_sim_bars_5m(
+        bars = load_sim_bars_1m(
             ticker,
             session_day=session_day,
             database_url=database_url,

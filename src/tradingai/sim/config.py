@@ -33,9 +33,6 @@ DEFAULT_PROFIT_TAKER_BUFFER = 0.0002
 DEFAULT_QUERY_LATENCY_SECONDS = 0.5
 DEFAULT_QUERY_PACE_SECONDS = 10.0
 DEFAULT_SCAN_BATCH_SIZE = 20
-# Max counter-trend close step as a fraction of dip depth (prior_close - trough).
-# Plunge: close[i]-close[i-1] < budget; reclaim: close[i-1]-close[i] < budget.
-DEFAULT_MAX_OSCILLATION_OF_DIP = 0.10
 DEFAULT_EXPORT_CHARTS = True
 DEFAULT_CHARTS_DIR = "data/sim_charts"
 
@@ -205,18 +202,6 @@ def get_sim_entry_cutoff(
     return int(hour), int(minute)
 
 
-def get_sim_max_oscillation_of_dip(*, config_path: str | None = None) -> float:
-    """Max counter-trend close step as a fraction of dip depth."""
-    section = _section("strategy", config_path)
-    raw = section.get("max_oscillation_of_dip")
-    if raw is None:
-        # Backward-compatible alias from the earlier bar-range experiment.
-        raw = section.get("max_bar_range_of_dip")
-    if raw is None:
-        return DEFAULT_MAX_OSCILLATION_OF_DIP
-    return max(0.0, float(raw))
-
-
 def get_query_latency_seconds(*, config_path: str | None = None) -> float:
     raw = _section("ibkr_query", config_path).get("query_latency_seconds")
     if raw is None:
@@ -267,7 +252,6 @@ __all__ = [
     "DEFAULT_ENTRY_CUTOFF_MINUTE",
     "DEFAULT_EXCLUDE_FIRST_BAR_GREEN",
     "DEFAULT_EXPORT_CHARTS",
-    "DEFAULT_MAX_OSCILLATION_OF_DIP",
     "DEFAULT_MAX_POSITIONS",
     "DEFAULT_MIN_BOUNCE_SCORE",
     "DEFAULT_PROFIT_TAKER_BUFFER",
@@ -296,7 +280,6 @@ __all__ = [
     "get_sim_dip_pct",
     "get_sim_entry_cutoff",
     "get_sim_exclude_first_bar_green",
-    "get_sim_max_oscillation_of_dip",
     "get_sim_max_positions",
     "get_sim_min_bounce_score",
     "get_sim_profit_taker_buffer",

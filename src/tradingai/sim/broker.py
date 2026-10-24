@@ -6,8 +6,8 @@ from math import floor
 
 import pandas as pd
 
-# Pending buys expire after one 5m bar (fill-or-cancel on the next window).
-DEFAULT_BUY_EXPIRE_MINUTES = 5
+# Pending buys expire after one 1-minute bar (fill-or-cancel on the next window).
+DEFAULT_BUY_EXPIRE_MINUTES = 1
 
 
 def integer_shares_for_notional(notional: float, price: float) -> int:
@@ -62,7 +62,7 @@ class ClosedTrade:
 
 @dataclass
 class PendingBuy:
-    """Submitted buy awaiting the next 5m window; cash already reserved."""
+    """Submitted buy awaiting the next 1m window; cash already reserved."""
 
     ticker: str
     qty: int
@@ -131,7 +131,7 @@ class SimBroker:
     """Cash + positions with pending buys, reservation, and limit/stop exits.
 
     Buys are submitted as **pending**: cash is reserved immediately and the
-    order may fill on the next 5m bar only. If not filled by then, it cancels
+    order may fill on the next 1m bar only. If not filled by then, it cancels
     and reserved cash returns to the budget.
 
     Same-bar exit conflict: if both limit and stop would fill, **stop wins**.
@@ -193,7 +193,7 @@ class SimBroker:
         expire_minutes: int = DEFAULT_BUY_EXPIRE_MINUTES,
         order_id: int | None = None,
     ) -> PendingBuy | None:
-        """Place a pending buy: reserve cash; fill-or-cancel on next 5m window."""
+        """Place a pending buy: reserve cash; fill-or-cancel on next 1m window."""
         symbol = ticker.upper()
         if symbol in self.positions or symbol in self.pending_buys:
             return None
@@ -250,7 +250,7 @@ class SimBroker:
         result = PendingBuyResult()
         for ticker in list(self.pending_buys.keys()):
             pending = self.pending_buys[ticker]
-            # Same bar as submit: wait for the next 5m window.
+            # Same bar as submit: wait for the next 1m window.
             if when <= pending.submitted_at:
                 continue
             bar = bars_by_ticker.get(ticker)

@@ -39,7 +39,7 @@ from tradingai.sim.repository import (
     insert_sim_position,
     list_sim_tickers,
     load_prior_close,
-    load_sim_bars_5m,
+    load_sim_bars_1m,
     update_sim_order,
 )
 from tradingai.sim.strategy import (
@@ -64,7 +64,7 @@ def _as_datetime(ts: datetime | pd.Timestamp) -> datetime:
 
 
 class DipSimEngine:
-    """Walk session days chronologically; step 5m bars with as-of visibility."""
+    """Walk session days chronologically; step 1m bars with as-of visibility."""
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class DipSimEngine:
         self.entries: list[EntrySignal] = []
         self.session_reports: list[dict[str, Any]] = []
         self._entered_today: set[str] = set()
-        # Dip-qualified plungers carried to the next 5m bar for re-check.
+        # Dip-qualified plungers carried to the next 1m bar for re-check.
         self._plunge_watch: set[str] = set()
 
     def run(
@@ -145,7 +145,7 @@ class DipSimEngine:
             if self.broker.positions:
                 prices: dict[str, float] = {}
                 for ticker in list(self.broker.positions.keys()):
-                    bars = load_sim_bars_5m(
+                    bars = load_sim_bars_1m(
                         ticker, session_day=last_day, database_url=self.database_url
                     )
                     if not bars.empty:
@@ -206,7 +206,7 @@ class DipSimEngine:
         prior_cache: dict[str, float | None] = {}
         all_times: set[pd.Timestamp] = set()
         for ticker in universe:
-            raw = load_sim_bars_5m(
+            raw = load_sim_bars_1m(
                 ticker, session_day=day, database_url=self.database_url
             )
             session = filter_rth_session(raw, session_day=day) if not raw.empty else raw
@@ -238,7 +238,7 @@ class DipSimEngine:
                 if series is not None:
                     bar_map[ticker] = series
 
-            # Pending buys: fill-or-cancel on the next 5m window after submit.
+            # Pending buys: fill-or-cancel on the next 1m window after submit.
             pending_result = self.broker.process_pending_buys(bar_map, when)
             for pos in pending_result.filled:
                 self._persist_buy_filled(pos, when)
@@ -397,7 +397,7 @@ class DipSimEngine:
     ) -> None:
         """Batch-scan with IBKR-like virtual latency, then rank and enter.
 
-        Walk order: plunge-watch (from prior 5m bar) first, then a random
+        Walk order: plunge-watch (from prior 1m bar) first, then a random
         permutation of the remaining universe. After each batch of
         ``scan_batch_size`` queries, dip-analyze and enter in rank order
         (early reclaim 0<score<1, deeper dip first). Dip-qualified plungers
@@ -469,7 +469,7 @@ class DipSimEngine:
                 break
 
     def _submit_buy(self, signal: EntrySignal, when: datetime) -> bool:
-        """Submit a pending buy (reserve cash). Fills on the next 5m bar or cancels."""
+        """Submit a pending buy (reserve cash). Fills on the next 1m bar or cancels."""
         qty = integer_shares_for_notional(
             self.params.buy_notional_usd, signal.buy_price
         )
@@ -674,8 +674,8 @@ class DipSimEngine:
                 for t in trades
             ],
             "disclaimer": (
-                "Simulated open-dip trading over Alpaca 5m bars. "
-                "Buys are pending with cash reserved until the next 5m bar "
+                "Simulated open-dip trading over Alpaca 1m bars. "
+                "Buys are pending with cash reserved until the next 1m bar "
                 "(fill-or-cancel). Informational only — not financial advice."
             ),
         }

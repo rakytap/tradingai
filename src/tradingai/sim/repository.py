@@ -20,7 +20,7 @@ def initialize_sim_schema(database_url: str | None = None) -> None:
         conn.execute(sql)
 
 
-def upsert_sim_bars_5m(
+def upsert_sim_bars_1m(
     ticker: str,
     rows: list[dict],
     *,
@@ -52,7 +52,7 @@ def upsert_sim_bars_5m(
         with conn.cursor() as cur:
             cur.executemany(
                 """
-                INSERT INTO sim_bars_5m (ticker, bar_time, open, high, low, close, volume)
+                INSERT INTO sim_bars_1m (ticker, bar_time, open, high, low, close, volume)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ticker, bar_time) DO UPDATE SET
                     open = EXCLUDED.open,
@@ -99,7 +99,7 @@ def session_has_sim_bars(
         row = conn.execute(
             """
             SELECT 1
-            FROM sim_bars_5m
+            FROM sim_bars_1m
             WHERE ticker = %s AND bar_time >= %s AND bar_time <= %s
             LIMIT 1
             """,
@@ -108,7 +108,7 @@ def session_has_sim_bars(
     return row is not None
 
 
-def load_sim_bars_5m(
+def load_sim_bars_1m(
     ticker: str,
     *,
     session_day: date | None = None,
@@ -117,7 +117,7 @@ def load_sim_bars_5m(
     end: datetime | None = None,
     database_url: str | None = None,
 ) -> pd.DataFrame:
-    """Load 5m bars; when ``as_of`` is set, only bars with ``bar_time <= as_of``."""
+    """Load 1m bars; when ``as_of`` is set, only bars with ``bar_time <= as_of``."""
     clauses = ["ticker = %s"]
     params: list[Any] = [ticker.upper()]
     if session_day is not None:
@@ -145,7 +145,7 @@ def load_sim_bars_5m(
         rows = conn.execute(
             f"""
             SELECT bar_time, open, high, low, close, volume
-            FROM sim_bars_5m
+            FROM sim_bars_1m
             WHERE {where}
             ORDER BY bar_time
             """,
@@ -185,7 +185,7 @@ def load_prior_close(
 def list_sim_tickers(*, database_url: str | None = None) -> list[str]:
     with get_connection(database_url or get_sim_database_url()) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT ticker FROM sim_bars_5m ORDER BY ticker"
+            "SELECT DISTINCT ticker FROM sim_bars_1m ORDER BY ticker"
         ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -198,7 +198,7 @@ def list_sim_session_days(
         rows = conn.execute(
             """
             SELECT DISTINCT (bar_time AT TIME ZONE 'America/New_York')::date AS session_day
-            FROM sim_bars_5m
+            FROM sim_bars_1m
             ORDER BY session_day
             """
         ).fetchall()

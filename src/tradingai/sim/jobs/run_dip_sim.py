@@ -1,4 +1,4 @@
-"""Run the deterministic open-dip simulator over Alpaca 5m history."""
+"""Run the deterministic open-dip simulator over Alpaca 1m history."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from tradingai.sim.config import (
     get_sim_dip_pct,
     get_sim_entry_cutoff,
     get_sim_exclude_first_bar_green,
-    get_sim_max_oscillation_of_dip,
     get_sim_max_positions,
     get_sim_min_bounce_score,
     get_sim_profit_taker_buffer,
@@ -68,7 +67,6 @@ def run_dip_sim(
     use_trail: bool | None = None,
     entry_cutoff_hour: int | None = None,
     entry_cutoff_minute: int | None = None,
-    max_oscillation_of_dip: float | None = None,
     start_day: date | None = None,
     end_day: date | None = None,
     database_url: str | None = None,
@@ -142,11 +140,6 @@ def run_dip_sim(
         entry_cutoff_minute=(
             int(entry_cutoff_minute) if entry_cutoff_minute is not None else cutoff_m
         ),
-        max_oscillation_of_dip=(
-            float(max_oscillation_of_dip)
-            if max_oscillation_of_dip is not None
-            else get_sim_max_oscillation_of_dip(config_path=cfg)
-        ),
     )
     engine = DipSimEngine(
         params=params,
@@ -184,7 +177,7 @@ def run_dip_sim(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run open-dip simulation over Alpaca 5m bars. "
+            "Run open-dip simulation over Alpaca 1m bars. "
             f"Defaults from {DEFAULT_SIM_CONFIG_PATH.name} (not .env)."
         )
     )
@@ -266,16 +259,6 @@ def main() -> None:
         default=None,
         help="HH:MM ET cutoff for new entries (default from config).",
     )
-    parser.add_argument(
-        "--max-oscillation-of-dip",
-        type=float,
-        default=None,
-        help=(
-            "Max counter-trend close step as a fraction of dip depth "
-            "(plunge: close[i]-close[i-1]; reclaim: close[i-1]-close[i]; "
-            "default from config, e.g. 0.10 = 10%%)."
-        ),
-    )
     parser.add_argument("--start-day", type=date.fromisoformat, default=None)
     parser.add_argument("--end-day", type=date.fromisoformat, default=None)
     parser.add_argument("--database-url", default=None)
@@ -335,7 +318,6 @@ def main() -> None:
             use_trail=use_trail,
             entry_cutoff_hour=cutoff_hour,
             entry_cutoff_minute=cutoff_minute,
-            max_oscillation_of_dip=args.max_oscillation_of_dip,
             start_day=args.start_day,
             end_day=args.end_day,
             database_url=args.database_url,

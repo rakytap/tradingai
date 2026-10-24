@@ -16,7 +16,7 @@ import pandas as pd
 from tradingai.intraday.bars import filter_rth_session
 from tradingai.intraday.config import ET
 from tradingai.sim.broker import ClosedTrade, WatchlistEntry
-from tradingai.sim.repository import load_sim_bars_5m
+from tradingai.sim.repository import load_sim_bars_1m
 
 DEFAULT_CHARTS_DIR = Path("data/sim_charts")
 
@@ -222,7 +222,7 @@ def export_trade_charts(
 
     for i, case in enumerate(cases, start=1):
         try:
-            bars = load_sim_bars_5m(
+            bars = load_sim_bars_1m(
                 case.ticker,
                 session_day=case.session_day,
                 database_url=database_url,

@@ -1,6 +1,6 @@
--- Dedicated schema for the Alpaca 5m open-dip simulator (tradingai_sim).
+-- Dedicated schema for the Alpaca 1m open-dip simulator (tradingai_sim).
 
-CREATE TABLE IF NOT EXISTS sim_bars_5m (
+CREATE TABLE IF NOT EXISTS sim_bars_1m (
     ticker TEXT NOT NULL,
     bar_time TIMESTAMPTZ NOT NULL,
     open DOUBLE PRECISION NOT NULL,
@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS sim_bars_5m (
     PRIMARY KEY (ticker, bar_time)
 );
 
-CREATE INDEX IF NOT EXISTS idx_sim_bars_5m_time
-    ON sim_bars_5m (bar_time);
+CREATE INDEX IF NOT EXISTS idx_sim_bars_1m_time
+    ON sim_bars_1m (bar_time);
 
 CREATE TABLE IF NOT EXISTS sim_daily_closes (
     ticker TEXT NOT NULL,
