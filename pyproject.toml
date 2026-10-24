@@ -23,6 +23,8 @@ dependencies = [
     "joblib>=1.3",
     "ib_insync>=0.9.86",
     "pyarrow>=15",
+    "alpaca-py>=0.28",
+    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +52,8 @@ tradingai-build-dip-dataset = "tradingai.intraday.jobs.build_dip_dataset:main"
 tradingai-train-dip-model = "tradingai.intraday.jobs.train_dip_model:main"
 tradingai-validate-dip-model = "tradingai.intraday.jobs.validate_dip_model:main"
 tradingai-scan-open-dip = "tradingai.intraday.jobs.scan_open_dip:main"
+tradingai-sim-download = "tradingai.sim.jobs.download_alpaca_5m:main"
+tradingai-sim-run = "tradingai.sim.jobs.run_dip_sim:main"
 tradingai-sync-stocks = "tradingai.data.jobs.sync_stocks:main"
 tradingai-sync-prices = "tradingai.data.jobs.sync_daily_prices:main"
 tradingai-sync-news = "tradingai.data.jobs.sync_news_events:main"
@@ -69,6 +73,8 @@ packages = ["src/tradingai"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/tradingai/data/universe/us_equities_1000.txt" = "tradingai/data/universe/us_equities_1000.txt"
 "src/tradingai/data/schema.sql" = "tradingai/data/schema.sql"
+"src/tradingai/sim/dip_sim.toml" = "tradingai/sim/dip_sim.toml"
+"src/tradingai/sim/schema.sql" = "tradingai/sim/schema.sql"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
