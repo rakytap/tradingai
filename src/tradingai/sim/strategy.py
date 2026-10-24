@@ -14,6 +14,7 @@ from tradingai.sim.config import (
     DEFAULT_DIP_PCT,
     DEFAULT_DIP_WINDOW_MINUTES,
     DEFAULT_EXCLUDE_FIRST_BAR_GREEN,
+    DEFAULT_MAX_PARABOLA_REL_RMSE,
     DEFAULT_MAX_POSITIONS,
     DEFAULT_MIN_BOUNCE_SCORE,
     DEFAULT_REQUIRE_STATUS,
@@ -22,6 +23,152 @@ from tradingai.sim.config import (
     DEFAULT_TARGET_RETURN,
     DEFAULT_USE_TRAIL,
 )
+
+
+@dataclass(frozen=True)
+class AsymmetricParabolaFit:
+    """Piecewise fit ``y = a*(x-m)^2 + c`` on each side of the trough."""
+
+    a_left: float
+    a_right: float
+    trough_price: float
+    trough_index: int
+    sse: float
+    rmse: float
+    rel_rmse: float
+    depth: float
+    n_left: int
+    n_right: int
+
+
+def _fit_half_parabola_a(
+    closes: list[float] | tuple[float, ...],
+    *,
+    trough_pos: int,
+    trough_price: float,
+    left: bool,
+) -> tuple[float, float, int]:
+    """Return ``(a, sse, n_points)`` for one arm with fixed vertex ``(trough_pos, c)``."""
+    n = len(closes)
+    c = float(trough_price)
+    num = 0.0
+    den = 0.0
+    idxs: list[int] = []
+    if left:
+        idxs = list(range(0, trough_pos + 1))
+    else:
+        idxs = list(range(trough_pos, n))
+    for i in idxs:
+        w = float(i - trough_pos) ** 2
+        if w <= 1e-18:
+            continue
+        z = float(closes[i]) - c
+        num += w * z
+        den += w * w
+    if den <= 1e-18:
+        return 0.0, float("inf"), len(idxs)
+    a = num / den
+    sse = 0.0
+    for i in idxs:
+        w = float(i - trough_pos) ** 2
+        pred = c + a * w
+        err = float(closes[i]) - pred
+        sse += err * err
+    return float(a), float(sse), len(idxs)
+
+
+def fit_asymmetric_parabola(
+    bars: pd.DataFrame,
+    *,
+    prior_close: float | None = None,
+) -> AsymmetricParabolaFit | None:
+    """Fit left/right half-parabolas on the caller-supplied as-of cut.
+
+    ``bars`` must already be the decision cut (RTH open through decision time).
+    The buy is evaluated/placed at the right edge of this series.
+
+    Left:  ``close[i] ≈ a_L*(i-t)^2 + c`` for ``i <= t``
+    Right: ``close[i] ≈ a_R*(i-t)^2 + c`` for ``i >= t``
+    with ``c = close[t]`` and ``t = argmin(low)`` inside the cut.
+
+    ``rel_rmse = rmse / depth`` where depth is ``max(prior_close - c, max(close)-c, eps)``.
+    """
+    if bars is None or bars.empty or "close" not in bars.columns:
+        return None
+    closes = [float(v) for v in bars["close"].astype(float).to_numpy()]
+    n = len(closes)
+    if n < 3:
+        return None
+    if "low" in bars.columns:
+        trough_pos = int(bars["low"].astype(float).to_numpy().argmin())
+    else:
+        trough_pos = int(min(range(n), key=lambda i: closes[i]))
+    if trough_pos <= 0 or trough_pos >= n - 1:
+        return None
+    c = closes[trough_pos]
+    a_l, sse_l, n_l = _fit_half_parabola_a(
+        closes, trough_pos=trough_pos, trough_price=c, left=True
+    )
+    a_r, sse_r, n_r = _fit_half_parabola_a(
+        closes, trough_pos=trough_pos, trough_price=c, left=False
+    )
+    # U-shape around a minimum requires positive curvature on both arms.
+    if a_l <= 1e-18 or a_r <= 1e-18:
+        return None
+    sse = sse_l + sse_r
+    n_pts = max(1, n)
+    rmse = (sse / n_pts) ** 0.5
+    peak = max(closes)
+    depth = max(peak - c, 0.0)
+    if prior_close is not None and float(prior_close) > c:
+        depth = max(depth, float(prior_close) - c)
+    if depth <= 1e-12:
+        return None
+    return AsymmetricParabolaFit(
+        a_left=a_l,
+        a_right=a_r,
+        trough_price=c,
+        trough_index=trough_pos,
+        sse=sse,
+        rmse=rmse,
+        rel_rmse=rmse / depth,
+        depth=depth,
+        n_left=n_l,
+        n_right=n_r,
+    )
+
+
+def asymmetric_parabola_fit_ok(
+    bars: pd.DataFrame,
+    *,
+    prior_close: float | None = None,
+    max_parabola_rel_rmse: float = DEFAULT_MAX_PARABOLA_REL_RMSE,
+) -> bool:
+    """True when the asymmetric parabola fit error is meaningfully small."""
+    fit = fit_asymmetric_parabola(bars, prior_close=prior_close)
+    if fit is None:
+        return False
+    return fit.rel_rmse <= max(0.0, float(max_parabola_rel_rmse)) + 1e-12
+
+
+def asymmetric_parabola_curve(
+    bars: pd.DataFrame,
+    *,
+    prior_close: float | None = None,
+) -> tuple[AsymmetricParabolaFit, pd.Series] | None:
+    """Return fit and a price series aligned to the as-of cut for plotting."""
+    fit = fit_asymmetric_parabola(bars, prior_close=prior_close)
+    if fit is None or bars is None or bars.empty:
+        return None
+    n = len(bars)
+    t = int(fit.trough_index)
+    c = float(fit.trough_price)
+    preds: list[float] = []
+    for i in range(n):
+        d2 = float(i - t) ** 2
+        a = fit.a_left if i <= t else fit.a_right
+        preds.append(c + a * d2)
+    return fit, pd.Series(preds, index=bars.index, name="parabola")
 
 
 @dataclass(frozen=True)
@@ -41,6 +188,7 @@ class StrategyParams:
     entry_cutoff_hour: int = 11
     entry_cutoff_minute: int = 0
     momentum_minutes: int = DEFAULT_SIM_MOMENTUM_MINUTES
+    max_parabola_rel_rmse: float = DEFAULT_MAX_PARABOLA_REL_RMSE
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +207,7 @@ class StrategyParams:
             "entry_cutoff_hour": self.entry_cutoff_hour,
             "entry_cutoff_minute": self.entry_cutoff_minute,
             "momentum_minutes": self.momentum_minutes,
+            "max_parabola_rel_rmse": self.max_parabola_rel_rmse,
         }
 
 
@@ -184,6 +333,17 @@ class OpenDipStrategy:
             if bounce.last_price is not None and bounce.last_price > 0
             else None
         )
+        prior = (
+            float(dip.prior_close)
+            if dip.prior_close is not None
+            else (float(prior_close) if prior_close is not None else None)
+        )
+        # All entry gates use the same as-of cut; buy is at the cut's right edge.
+        parabola_ok = asymmetric_parabola_fit_ok(
+            bars_as_of,
+            prior_close=prior,
+            max_parabola_rel_rmse=params.max_parabola_rel_rmse,
+        )
         if (
             bounce.status in params.require_status
             and not (
@@ -193,6 +353,7 @@ class OpenDipStrategy:
                 params.min_bounce_score is None
                 or bounce.bounce_score >= float(params.min_bounce_score)
             )
+            and parabola_ok
             and buy_price is not None
         ):
             targets = target_sell_price(
@@ -203,6 +364,13 @@ class OpenDipStrategy:
                 sell_trail=params.sell_trail,
             )
             reasons = list(dict.fromkeys([*dip.reasons, *bounce.reasons]))
+            fit = fit_asymmetric_parabola(bars_as_of, prior_close=prior)
+            if fit is not None:
+                reasons.append(
+                    f"parabola_rel_rmse={fit.rel_rmse:.4f}"
+                    f"<= {params.max_parabola_rel_rmse:.4f}"
+                    f" a_L={fit.a_left:.6g} a_R={fit.a_right:.6g}"
+                )
             entry = EntrySignal(
                 ticker=symbol,
                 session_day=session_day,

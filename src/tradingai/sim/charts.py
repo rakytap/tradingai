@@ -16,7 +16,9 @@ import pandas as pd
 from tradingai.intraday.bars import filter_rth_session
 from tradingai.intraday.config import ET
 from tradingai.sim.broker import ClosedTrade, WatchlistEntry
-from tradingai.sim.repository import load_sim_bars_1m
+from tradingai.sim.clock import as_of_bars
+from tradingai.sim.repository import load_prior_close, load_sim_bars_1m
+from tradingai.sim.strategy import asymmetric_parabola_curve
 
 DEFAULT_CHARTS_DIR = Path("data/sim_charts")
 
@@ -127,13 +129,20 @@ def plot_trade_case(
     bars: pd.DataFrame,
     *,
     out_path: Path,
+    prior_close: float | None = None,
 ) -> Path:
-    """Plot RTH close with transaction markers; write PNG to ``out_path``."""
+    """Plot RTH close with transaction markers; write PNG to ``out_path``.
+
+    The asymmetric parabola is fitted on the decision cut (open through
+    submit time) — the same as-of series used for entry gates — so the
+    curve's right edge aligns with the buy submit.
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     session = filter_rth_session(bars, session_day=case.session_day) if not bars.empty else bars
     fig, ax = plt.subplots(figsize=(11, 5))
+    parabola_note = ""
 
     if session.empty:
         ax.set_title(f"{case.ticker} {case.session_day} — no bars")
@@ -155,6 +164,45 @@ def plot_trade_case(
             alpha=0.12,
             label="high-low",
         )
+
+        prior = float(prior_close) if prior_close is not None else None
+        # Decision cut ends at submit (fallback: fill / cancel).
+        cut_end = case.submit_at or case.fill_at or case.cancel_at
+        decision_cut = as_of_bars(session, cut_end) if cut_end is not None else session
+        curve = asymmetric_parabola_curve(decision_cut, prior_close=prior)
+        if curve is not None:
+            fit, fitted = curve
+            ax.plot(
+                fitted.index,
+                fitted.astype(float),
+                color="#9467bd",
+                linewidth=1.6,
+                linestyle="--",
+                label=(
+                    f"asym. parabola (as-of)  "
+                    f"aL={fit.a_left:.3g} aR={fit.a_right:.3g}  "
+                    f"relRMSE={fit.rel_rmse:.3f}"
+                ),
+            )
+            # Shade the decision cut; right edge is the buy decision bar.
+            ax.axvspan(
+                fitted.index[0],
+                fitted.index[-1],
+                color="#9467bd",
+                alpha=0.06,
+                zorder=0,
+            )
+            trough_ts = fitted.index[fit.trough_index]
+            ax.scatter(
+                [trough_ts],
+                [fit.trough_price],
+                color="#9467bd",
+                marker="*",
+                s=120,
+                zorder=6,
+                label="trough (fit)",
+            )
+            parabola_note = f"  relRMSE={fit.rel_rmse:.3f}"
 
         def _mark(ts: datetime | None, price: float | None, *, color: str, marker: str, label: str) -> None:
             if ts is None:
@@ -185,7 +233,10 @@ def plot_trade_case(
     if case.realized_pnl is not None:
         pnl_bit = f"  pnl={case.realized_pnl:+.2f}"
     reason_bit = f"  ({case.exit_reason})" if case.exit_reason else ""
-    ax.set_title(f"{case.ticker}  {case.session_day}  {case.outcome}{reason_bit}{pnl_bit}")
+    ax.set_title(
+        f"{case.ticker}  {case.session_day}  {case.outcome}"
+        f"{reason_bit}{pnl_bit}{parabola_note}"
+    )
     handles, labels = ax.get_legend_handles_labels()
     # Deduplicate legend labels
     seen: set[str] = set()
@@ -227,8 +278,18 @@ def export_trade_charts(
                 session_day=case.session_day,
                 database_url=database_url,
             )
+            prior = load_prior_close(
+                case.ticker,
+                case.session_day,
+                database_url=database_url,
+            )
             fname = f"{i:04d}_{case.session_day.isoformat()}_{case.ticker}_{case.outcome}.png"
-            path = plot_trade_case(case, bars, out_path=run_folder / fname)
+            path = plot_trade_case(
+                case,
+                bars,
+                out_path=run_folder / fname,
+                prior_close=prior,
+            )
             written.append(str(path))
         except Exception as exc:
             errors.append(f"{case.ticker} {case.session_day}: {exc}")

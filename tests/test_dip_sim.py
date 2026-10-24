@@ -26,7 +26,10 @@ from tradingai.sim.strategy import (
     EntrySignal,
     OpenDipStrategy,
     StrategyParams,
+    asymmetric_parabola_curve,
+    asymmetric_parabola_fit_ok,
     entry_rank_key,
+    fit_asymmetric_parabola,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -290,17 +293,99 @@ def test_broker_profit_band_0_2_to_0_4_pct():
     assert 0.2 <= move_pct <= 0.4
 
 
-def test_strategy_enters_on_dip_reclaiming():
-    # Prior 100; trough ~96 (-4%); later reclaim.
-    n = 18  # 9:30 → ~10:55 in 5m steps
-    closes = [97.0] * 6 + [98.0] * 4 + [100.5] * 8
+def _parabolic_closes(
+    *,
+    n: int = 18,
+    trough_pos: int = 5,
+    trough: float = 96.0,
+    a_left: float = 0.18,
+    a_right: float = 0.06,
+) -> list[float]:
+    closes: list[float] = []
+    for i in range(n):
+        d = i - trough_pos
+        a = a_left if i <= trough_pos else a_right
+        closes.append(trough + a * d * d)
+    return closes
+
+
+def _reclaiming_session_bars() -> pd.DataFrame:
+    """As-of cut with interior trough and clean asymmetric V arms."""
+    closes = _parabolic_closes(n=18, trough_pos=5, trough=96.0, a_left=0.18, a_right=0.06)
+    trough_pos = 5
+    lows = [c - 0.05 for c in closes]
+    lows[trough_pos] = min(closes) - 0.2
+    return _five_min_session(
+        opens=[closes[0]] + closes[:-1],
+        highs=[c + 0.3 for c in closes],
+        lows=lows,
+        closes=closes,
+        volumes=[5000.0] * len(closes),
+    )
+
+
+def test_asymmetric_parabola_fit_ok_on_clean_v():
+    bars = _reclaiming_session_bars()
+    fit = fit_asymmetric_parabola(bars, prior_close=100.0)
+    assert fit is not None
+    assert fit.a_left > 0 and fit.a_right > 0
+    assert fit.rel_rmse < 0.05
+    assert asymmetric_parabola_fit_ok(
+        bars, prior_close=100.0, max_parabola_rel_rmse=0.15
+    )
+    curve = asymmetric_parabola_curve(bars, prior_close=100.0)
+    assert curve is not None
+    fit2, series = curve
+    assert fit2.trough_index == fit.trough_index
+    assert len(series) == len(bars)
+    assert abs(float(series.iloc[fit.trough_index]) - fit.trough_price) < 1e-9
+    # Right edge of the fitted curve is the decision / buy bar.
+    assert series.index[-1] == bars.index[-1]
+
+
+def test_asymmetric_parabola_uses_asof_cut_not_full_session():
+    """Fit only sees the as-of prefix; a later deeper trough is invisible."""
+    early = _parabolic_closes(n=8, trough_pos=3, trough=96.0, a_left=0.2, a_right=0.1)
+    late = [95.0, 94.0, 93.0, 94.5, 96.0, 97.0]
+    closes = early + late
+    lows = [c - 0.05 for c in closes]
+    lows[3] = 95.8
+    lows[10] = 92.5
+    bars = _five_min_session(
+        opens=[closes[0]] + closes[:-1],
+        highs=[c + 0.3 for c in closes],
+        lows=lows,
+        closes=closes,
+    )
+    from tradingai.sim.clock import as_of_bars
+
+    cut = as_of_bars(bars, bars.index[7])  # ends before late trough
+    full = fit_asymmetric_parabola(bars, prior_close=100.0)
+    asof = fit_asymmetric_parabola(cut, prior_close=100.0)
+    assert asof is not None
+    assert asof.trough_index == 3
+    if full is not None:
+        assert full.trough_index != asof.trough_index
+
+
+def test_asymmetric_parabola_fit_rejects_noisy_w():
+    # W-shape / oscillation after trough → large relative RMSE.
+    closes = [99.0, 97.5, 96.0, 98.5, 96.2, 99.0, 97.0, 100.5, 98.0, 101.0]
     bars = _five_min_session(
         opens=[99.0] + closes[:-1],
-        highs=[c + 1.5 for c in closes],
-        lows=[96.0] + [c - 1.0 for c in closes[1:]],
+        highs=[c + 0.4 for c in closes],
+        lows=[c - 0.4 for c in closes],
         closes=closes,
-        volumes=[5000.0] * n,
     )
+    # Force trough at index 2.
+    bars.loc[bars.index[2], "low"] = 95.0
+    assert not asymmetric_parabola_fit_ok(
+        bars, prior_close=100.0, max_parabola_rel_rmse=0.15
+    )
+
+
+def test_strategy_enters_on_dip_reclaiming():
+    bars = _reclaiming_session_bars()
     params = StrategyParams(
         dip_pct=2.0,
         window_minutes=30,
@@ -308,6 +393,7 @@ def test_strategy_enters_on_dip_reclaiming():
         target_return=0.003,
         stop_loss=0.01,
         use_trail=False,
+        max_parabola_rel_rmse=0.15,
     )
     strategy = OpenDipStrategy(params)
     as_of = bars.index[-1].to_pydatetime()
@@ -356,18 +442,7 @@ def test_strategy_params_to_dict():
     assert d["stop_loss"] == 0.015
     assert d["require_status"] == ["reclaiming"]
     assert d["momentum_minutes"] == 5
-
-
-def _reclaiming_session_bars() -> pd.DataFrame:
-    n = 18
-    closes = [97.0] * 6 + [98.0] * 4 + [100.5] * 8
-    return _five_min_session(
-        opens=[99.0] + closes[:-1],
-        highs=[c + 1.5 for c in closes],
-        lows=[96.0] + [c - 1.0 for c in closes[1:]],
-        closes=closes,
-        volumes=[5000.0] * n,
-    )
+    assert d["max_parabola_rel_rmse"] == 0.15
 
 
 def _scan_engine(**query_kwargs) -> DipSimEngine:

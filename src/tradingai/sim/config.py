@@ -35,6 +35,8 @@ DEFAULT_QUERY_PACE_SECONDS = 10.0
 DEFAULT_SCAN_BATCH_SIZE = 20
 # Bounce/reclaim momentum lookback for the sim only (live scan keeps 15m).
 DEFAULT_SIM_MOMENTUM_MINUTES = 5
+# Max RMSE of asymmetric parabola fit / dip depth on the as-of cut.
+DEFAULT_MAX_PARABOLA_REL_RMSE = 0.15
 DEFAULT_EXPORT_CHARTS = True
 DEFAULT_CHARTS_DIR = "data/sim_charts"
 
@@ -212,6 +214,14 @@ def get_sim_momentum_minutes(*, config_path: str | None = None) -> int:
     return max(1, int(raw))
 
 
+def get_sim_max_parabola_rel_rmse(*, config_path: str | None = None) -> float:
+    """Max relative RMSE for the asymmetric parabola dip-shape fit."""
+    raw = _section("strategy", config_path).get("max_parabola_rel_rmse")
+    if raw is None:
+        return DEFAULT_MAX_PARABOLA_REL_RMSE
+    return max(0.0, float(raw))
+
+
 def get_query_latency_seconds(*, config_path: str | None = None) -> float:
     raw = _section("ibkr_query", config_path).get("query_latency_seconds")
     if raw is None:
@@ -262,6 +272,7 @@ __all__ = [
     "DEFAULT_ENTRY_CUTOFF_MINUTE",
     "DEFAULT_EXCLUDE_FIRST_BAR_GREEN",
     "DEFAULT_EXPORT_CHARTS",
+    "DEFAULT_MAX_PARABOLA_REL_RMSE",
     "DEFAULT_MAX_POSITIONS",
     "DEFAULT_SIM_MOMENTUM_MINUTES",
     "DEFAULT_MIN_BOUNCE_SCORE",
@@ -291,6 +302,7 @@ __all__ = [
     "get_sim_dip_pct",
     "get_sim_entry_cutoff",
     "get_sim_exclude_first_bar_green",
+    "get_sim_max_parabola_rel_rmse",
     "get_sim_max_positions",
     "get_sim_momentum_minutes",
     "get_sim_min_bounce_score",

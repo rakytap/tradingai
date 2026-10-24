@@ -28,6 +28,25 @@ class OpenDipSignal:
     candle_reasons: tuple[str, ...] = ()
 
 
+def dip_window_bars(
+    bars: pd.DataFrame,
+    *,
+    window_minutes: int = DEFAULT_DIP_WINDOW_MINUTES,
+) -> pd.DataFrame:
+    """RTH bars in ``[open, open + window_minutes)`` — the dip evaluation cut."""
+    if bars is None or bars.empty:
+        return bars
+    minutes = max(1, int(window_minutes))
+    if isinstance(bars.index, pd.DatetimeIndex) and len(bars.index):
+        day = bars.index[0].date()
+        open_ts = rth_open_for_day(day)
+        window_end = open_ts + pd.Timedelta(minutes=minutes)
+        window = bars.loc[(bars.index >= open_ts) & (bars.index < window_end)]
+        if not window.empty:
+            return window
+    return bars.iloc[:minutes]
+
+
 def detect_open_dip(
     bars: pd.DataFrame,
     *,
@@ -61,13 +80,7 @@ def detect_open_dip(
             reasons=("missing_prior_close",),
         )
 
-    day = bars.index[0].date()
-    open_ts = rth_open_for_day(day)
-    window_end = open_ts + pd.Timedelta(minutes=max(1, int(window_minutes)))
-    window = bars.loc[(bars.index >= open_ts) & (bars.index < window_end)]
-    if window.empty:
-        window = bars.iloc[: max(1, int(window_minutes))]
-
+    window = dip_window_bars(bars, window_minutes=window_minutes)
     trough_idx = window["low"].astype(float).idxmin()
     trough = float(window.loc[trough_idx, "low"])
     trough_time = pd.Timestamp(trough_idx)

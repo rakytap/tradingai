@@ -20,6 +20,7 @@ from tradingai.sim.config import (
     get_sim_dip_pct,
     get_sim_entry_cutoff,
     get_sim_exclude_first_bar_green,
+    get_sim_max_parabola_rel_rmse,
     get_sim_max_positions,
     get_sim_momentum_minutes,
     get_sim_min_bounce_score,
@@ -69,6 +70,7 @@ def run_dip_sim(
     entry_cutoff_hour: int | None = None,
     entry_cutoff_minute: int | None = None,
     momentum_minutes: int | None = None,
+    max_parabola_rel_rmse: float | None = None,
     start_day: date | None = None,
     end_day: date | None = None,
     database_url: str | None = None,
@@ -146,6 +148,11 @@ def run_dip_sim(
             int(momentum_minutes)
             if momentum_minutes is not None
             else get_sim_momentum_minutes(config_path=cfg)
+        ),
+        max_parabola_rel_rmse=(
+            float(max_parabola_rel_rmse)
+            if max_parabola_rel_rmse is not None
+            else get_sim_max_parabola_rel_rmse(config_path=cfg)
         ),
     )
     engine = DipSimEngine(
@@ -272,6 +279,15 @@ def main() -> None:
         default=None,
         help="Sim bounce momentum lookback in minutes (default from config, e.g. 5).",
     )
+    parser.add_argument(
+        "--max-parabola-rel-rmse",
+        type=float,
+        default=None,
+        help=(
+            "Max RMSE/dip_depth for asymmetric parabola fit around the trough "
+            "(default from config, e.g. 0.15)."
+        ),
+    )
     parser.add_argument("--start-day", type=date.fromisoformat, default=None)
     parser.add_argument("--end-day", type=date.fromisoformat, default=None)
     parser.add_argument("--database-url", default=None)
@@ -332,6 +348,7 @@ def main() -> None:
             entry_cutoff_hour=cutoff_hour,
             entry_cutoff_minute=cutoff_minute,
             momentum_minutes=args.momentum_minutes,
+            max_parabola_rel_rmse=args.max_parabola_rel_rmse,
             start_day=args.start_day,
             end_day=args.end_day,
             database_url=args.database_url,
