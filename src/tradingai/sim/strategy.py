@@ -17,6 +17,7 @@ from tradingai.sim.config import (
     DEFAULT_MAX_POSITIONS,
     DEFAULT_MIN_BOUNCE_SCORE,
     DEFAULT_REQUIRE_STATUS,
+    DEFAULT_SIM_MOMENTUM_MINUTES,
     DEFAULT_STOP_LOSS,
     DEFAULT_TARGET_RETURN,
     DEFAULT_USE_TRAIL,
@@ -39,6 +40,7 @@ class StrategyParams:
     use_trail: bool = DEFAULT_USE_TRAIL
     entry_cutoff_hour: int = 11
     entry_cutoff_minute: int = 0
+    momentum_minutes: int = DEFAULT_SIM_MOMENTUM_MINUTES
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +58,7 @@ class StrategyParams:
             "use_trail": self.use_trail,
             "entry_cutoff_hour": self.entry_cutoff_hour,
             "entry_cutoff_minute": self.entry_cutoff_minute,
+            "momentum_minutes": self.momentum_minutes,
         }
 
 
@@ -170,7 +173,11 @@ class OpenDipStrategy:
                 status=None,
                 bounce_score=None,
             )
-        bounce = assess_bounce(bars_as_of, dip)
+        bounce = assess_bounce(
+            bars_as_of,
+            dip,
+            momentum_minutes=params.momentum_minutes,
+        )
         entry: EntrySignal | None = None
         buy_price = (
             float(bounce.last_price)

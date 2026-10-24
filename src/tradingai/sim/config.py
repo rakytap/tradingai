@@ -33,6 +33,8 @@ DEFAULT_PROFIT_TAKER_BUFFER = 0.0002
 DEFAULT_QUERY_LATENCY_SECONDS = 0.5
 DEFAULT_QUERY_PACE_SECONDS = 10.0
 DEFAULT_SCAN_BATCH_SIZE = 20
+# Bounce/reclaim momentum lookback for the sim only (live scan keeps 15m).
+DEFAULT_SIM_MOMENTUM_MINUTES = 5
 DEFAULT_EXPORT_CHARTS = True
 DEFAULT_CHARTS_DIR = "data/sim_charts"
 
@@ -202,6 +204,14 @@ def get_sim_entry_cutoff(
     return int(hour), int(minute)
 
 
+def get_sim_momentum_minutes(*, config_path: str | None = None) -> int:
+    """Momentum lookback minutes for sim bounce/reclaim scoring."""
+    raw = _section("strategy", config_path).get("momentum_minutes")
+    if raw is None:
+        return DEFAULT_SIM_MOMENTUM_MINUTES
+    return max(1, int(raw))
+
+
 def get_query_latency_seconds(*, config_path: str | None = None) -> float:
     raw = _section("ibkr_query", config_path).get("query_latency_seconds")
     if raw is None:
@@ -253,6 +263,7 @@ __all__ = [
     "DEFAULT_EXCLUDE_FIRST_BAR_GREEN",
     "DEFAULT_EXPORT_CHARTS",
     "DEFAULT_MAX_POSITIONS",
+    "DEFAULT_SIM_MOMENTUM_MINUTES",
     "DEFAULT_MIN_BOUNCE_SCORE",
     "DEFAULT_PROFIT_TAKER_BUFFER",
     "DEFAULT_QUERY_LATENCY_SECONDS",
@@ -281,6 +292,7 @@ __all__ = [
     "get_sim_entry_cutoff",
     "get_sim_exclude_first_bar_green",
     "get_sim_max_positions",
+    "get_sim_momentum_minutes",
     "get_sim_min_bounce_score",
     "get_sim_profit_taker_buffer",
     "get_sim_require_status",

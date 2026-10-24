@@ -25,6 +25,8 @@ exclude_first_bar_green = false
 use_trail = true
 entry_cutoff_hour = 11
 entry_cutoff_minute = 0
+# Sim-only bounce momentum window (live scan still uses 15m).
+momentum_minutes = 5
 
 # IBKR-like historical query cost (virtual time in the entry scan; no wall-clock sleep).
 # Sustained hist pacing ≈ 60 requests / 10 minutes → ~10s between names.

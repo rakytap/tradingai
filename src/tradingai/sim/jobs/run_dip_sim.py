@@ -21,6 +21,7 @@ from tradingai.sim.config import (
     get_sim_entry_cutoff,
     get_sim_exclude_first_bar_green,
     get_sim_max_positions,
+    get_sim_momentum_minutes,
     get_sim_min_bounce_score,
     get_sim_profit_taker_buffer,
     get_sim_require_status,
@@ -67,6 +68,7 @@ def run_dip_sim(
     use_trail: bool | None = None,
     entry_cutoff_hour: int | None = None,
     entry_cutoff_minute: int | None = None,
+    momentum_minutes: int | None = None,
     start_day: date | None = None,
     end_day: date | None = None,
     database_url: str | None = None,
@@ -139,6 +141,11 @@ def run_dip_sim(
         ),
         entry_cutoff_minute=(
             int(entry_cutoff_minute) if entry_cutoff_minute is not None else cutoff_m
+        ),
+        momentum_minutes=(
+            int(momentum_minutes)
+            if momentum_minutes is not None
+            else get_sim_momentum_minutes(config_path=cfg)
         ),
     )
     engine = DipSimEngine(
@@ -259,6 +266,12 @@ def main() -> None:
         default=None,
         help="HH:MM ET cutoff for new entries (default from config).",
     )
+    parser.add_argument(
+        "--momentum-minutes",
+        type=int,
+        default=None,
+        help="Sim bounce momentum lookback in minutes (default from config, e.g. 5).",
+    )
     parser.add_argument("--start-day", type=date.fromisoformat, default=None)
     parser.add_argument("--end-day", type=date.fromisoformat, default=None)
     parser.add_argument("--database-url", default=None)
@@ -318,6 +331,7 @@ def main() -> None:
             use_trail=use_trail,
             entry_cutoff_hour=cutoff_hour,
             entry_cutoff_minute=cutoff_minute,
+            momentum_minutes=args.momentum_minutes,
             start_day=args.start_day,
             end_day=args.end_day,
             database_url=args.database_url,

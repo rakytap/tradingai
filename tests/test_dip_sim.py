@@ -355,6 +355,7 @@ def test_strategy_params_to_dict():
     assert d["dip_pct"] == 4.0
     assert d["stop_loss"] == 0.015
     assert d["require_status"] == ["reclaiming"]
+    assert d["momentum_minutes"] == 5
 
 
 def _reclaiming_session_bars() -> pd.DataFrame:
