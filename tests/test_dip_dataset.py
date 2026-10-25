@@ -6,6 +6,11 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from tradingai.intraday.dip_charts import (
+    pick_stratified_samples,
+    plot_dip_sample,
+    write_dip_dataset_viz,
+)
 from tradingai.intraday.dip_dataset import (
     assemble_cuts,
     build_cut,
@@ -102,6 +107,7 @@ def test_sample_cut_ends_avoids_anchor_and_horizon():
         n_after=10,
         min_horizon_minutes=horizon,
         rng=np.random.default_rng(0),
+        vicinity_minutes=45,
     )
     second = sample_cut_ends(
         bars,
@@ -110,6 +116,7 @@ def test_sample_cut_ends_avoids_anchor_and_horizon():
         n_after=10,
         min_horizon_minutes=horizon,
         rng=np.random.default_rng(0),
+        vicinity_minutes=45,
     )
     assert first == second
     before = [stamp for stamp, side in first if side == "before"]
@@ -120,6 +127,7 @@ def test_sample_cut_ends_avoids_anchor_and_horizon():
     for stamp, _side in first:
         assert stamp != anchor
         assert stamp <= last_eligible
+        assert abs(stamp - anchor) <= pd.Timedelta(minutes=45)
     assert all(stamp < anchor for stamp in before)
     assert all(stamp > anchor for stamp in after)
 
@@ -134,12 +142,36 @@ def test_sample_cut_ends_takes_every_bar_when_the_side_is_short():
         n_after=10,
         min_horizon_minutes=20,
         rng=np.random.default_rng(1),
+        vicinity_minutes=45,
     )
     before = [stamp for stamp, side in chosen if side == "before"]
     after = [stamp for stamp, side in chosen if side == "after"]
     assert before == list(bars.index[:5])
     assert after == list(bars.index[6:10])
     assert anchor not in before and anchor not in after
+
+
+def test_sample_cut_ends_stays_within_vicinity_of_dip():
+    bars = _bars(lows=[100.0] * 120, closes=[100.0] * 120)
+    anchor = bars.index[60]
+    chosen = sample_cut_ends(
+        bars,
+        anchor,
+        n_before=20,
+        n_after=20,
+        min_horizon_minutes=5,
+        rng=np.random.default_rng(2),
+        vicinity_minutes=45,
+    )
+    assert chosen
+    window = pd.Timedelta(minutes=45)
+    for stamp, side in chosen:
+        assert stamp != anchor
+        assert abs(stamp - anchor) <= window
+        assert side == ("before" if stamp < anchor else "after")
+    # Far-from-dip bars are excluded even when the side is otherwise long.
+    assert all(stamp >= bars.index[15] for stamp, _ in chosen if stamp < anchor)
+    assert all(stamp <= bars.index[105] for stamp, _ in chosen if stamp > anchor)
 
 
 def test_build_cut_starts_with_prior_close_and_stops_at_cut_end():
@@ -155,35 +187,64 @@ def test_build_cut_starts_with_prior_close_and_stops_at_cut_end():
     assert cut.index[-1] <= cut_end
 
 
-def test_label_cut_uses_later_high_versus_cut_end_close():
+def test_label_cut_falling_when_new_low_and_no_timely_sell():
     bars = _recovery_session()
-    # Still falling: later bars print a new low (95), even though a rise follows.
+    # Still falling: later bars print a new low (95); sell target not hit in 30m.
     pre_end = bars.index[0]
-    pre_label, pre_high = label_cut(bars, pre_end, entry_close=100.0, rise_pct=0.4)
-    assert pre_high == 110.0
+    pre_label, pre_high = label_cut(bars, pre_end, entry_close=100.0)
     assert pre_label == -1
+    # Max high is only within the 30-minute label window (not the later 110 spike).
+    assert pre_high is not None and pre_high < 110.0
 
-    # After the trough, no new low and only a tiny high → 0.
+    # After the trough, no new low and highs stay below the sell target → 0.
     late_end = bars.index[40]
     late_close = float(bars.loc[late_end, "close"])
-    late_label, late_high = label_cut(bars, late_end, entry_close=late_close, rise_pct=0.4)
+    sell = target_sell_price_for_entry(late_close)
+    late_label, late_high = label_cut(
+        bars,
+        late_end,
+        entry_close=late_close,
+        sell_target=sell,
+    )
     assert late_close == 100.0
     assert late_high == 100.05
+    assert late_high < sell
     assert late_label == 0
 
 
-def test_label_cut_rise_after_trough_is_positive():
+def test_label_cut_sell_target_within_horizon_is_positive():
     bars = _recovery_session()
-    # First bar at the trough (low 95); later highs reach 110 without a deeper low.
+    # First bar at the trough (low 95); within 30m a high of 110 clears the sell tgt.
     trough_end = bars.index[20]
+    entry = float(bars.loc[trough_end, "close"])
+    sell = target_sell_price_for_entry(entry)
     label, max_high = label_cut(
         bars,
         trough_end,
-        entry_close=float(bars.loc[trough_end, "close"]),
-        rise_pct=0.4,
+        entry_close=entry,
+        sell_target=sell,
+        label_horizon_minutes=30,
     )
     assert max_high == 110.0
+    assert max_high >= sell
     assert label == 1
+
+
+def test_label_cut_sell_target_after_horizon_is_not_positive():
+    bars = _recovery_session()
+    trough_end = bars.index[20]
+    entry = float(bars.loc[trough_end, "close"])
+    sell = target_sell_price_for_entry(entry)
+    # Spike to 110 is ~11 minutes after the trough; a 5-minute horizon misses it.
+    label, max_high = label_cut(
+        bars,
+        trough_end,
+        entry_close=entry,
+        sell_target=sell,
+        label_horizon_minutes=5,
+    )
+    assert max_high is not None and max_high < sell
+    assert label in (-1, 0)
 
 
 def test_count_level_crossings_close_to_close():
@@ -222,6 +283,7 @@ def test_assemble_cuts_records_sell_crossings():
         cuts_before=1,
         cuts_after=1,
         min_horizon_minutes=5,
+        label_horizon_minutes=5,
         crossing_sessions=5,
         seed=0,
     )
@@ -248,6 +310,7 @@ def test_assemble_cuts_labels_match_future_high_and_keep_the_prefix():
         cuts_before=3,
         cuts_after=3,
         min_horizon_minutes=5,
+        label_horizon_minutes=5,
         seed=2,
     )
     assert qualifying == 1
@@ -256,7 +319,13 @@ def test_assemble_cuts_labels_match_future_high_and_keep_the_prefix():
     assert (samples["side"] == "after").sum() == 3
     assert samples["ticker"].tolist() == ["ABC"] * 6
     for row in samples.itertuples(index=False):
-        expected, _high = label_cut(bars, row.cut_end, row.entry_close, 0.4)
+        expected, _high = label_cut(
+            bars,
+            row.cut_end,
+            row.entry_close,
+            sell_target=float(row.target_sell_price),
+            label_horizon_minutes=5,
+        )
         assert row.label == expected
         assert row.cut_end != anchor.anchor_time
         window = cut_bars[cut_bars["sample_id"] == row.sample_id].sort_values("seq")
@@ -274,6 +343,7 @@ def test_write_dip_dataset_roundtrip(tmp_path):
         cuts_before=1,
         cuts_after=1,
         min_horizon_minutes=5,
+        label_horizon_minutes=5,
         seed=0,
     )
     out = write_dip_dataset(samples, cut_bars, tmp_path / "dip_dataset")
@@ -388,3 +458,53 @@ def test_format_ib_end_datetime_converts_eastern_close_to_utc():
     assert format_ib_end_datetime(datetime(2026, 10, 14, 16, 0)) == "20261014 20:00:00 UTC"
     assert format_ib_end_datetime(None) == ""
     assert format_ib_end_datetime("20261014 20:00:00 UTC") == "20261014 20:00:00 UTC"
+
+
+def test_write_dip_dataset_viz_plots_full_session(tmp_path):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    session = _recovery_session()
+    samples, cut_bars, _ = assemble_cuts(
+        [("AAA", date(2026, 10, 14), session, 100.0)],
+        cuts_before=1,
+        cuts_after=1,
+        min_horizon_minutes=5,
+        label_horizon_minutes=5,
+        seed=0,
+    )
+    assert not samples.empty
+    out = write_dip_dataset_viz(
+        samples,
+        cut_bars,
+        tmp_path / "viz",
+        sessions={("AAA", date(2026, 10, 14)): session},
+        n=min(2, len(samples)),
+        seed=0,
+    )
+    pngs = sorted(out.glob("sample_*.png"))
+    assert len(pngs) >= 1
+    assert (out / f"overview_{len(pngs)}.png").exists()
+
+    # Full session is longer than the cut window through cut_end.
+    row = samples.iloc[0]
+    cut = cut_bars[cut_bars["sample_id"] == row.sample_id]
+    cut_real = cut[~cut["is_prior_close"].astype(bool)]
+    assert len(session) > len(cut_real)
+
+    fig, ax = plt.subplots()
+    plot_dip_sample(ax, row, session_bars=session, cut_bars=cut)
+    # Pre-cut (dark) and post-cut (grey) close lines both present.
+    assert len(ax.get_lines()) >= 2
+    span = ax.get_xlim()[1] - ax.get_xlim()[0]
+    session_span = (
+        session.index[-1].to_pydatetime().timestamp()
+        - session.index[0].to_pydatetime().timestamp()
+    ) / 86400.0
+    assert span >= session_span * 0.9
+    plt.close(fig)
+
+    picked = pick_stratified_samples(samples, n=1, seed=0)
+    assert len(picked) == 1

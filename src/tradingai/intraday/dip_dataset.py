@@ -1,12 +1,14 @@
-"""Training cuts for a 4% intraday dip and a further 0.4% rise.
+"""Training cuts for a 4% intraday dip near a fee-aware sell-target recovery.
 
 Every sample comes from a regular session that eventually trades at least
 ``dip_pct`` below the prior close. Cuts end at random 1-minute bars strictly
-before and after the first bar that prints that dip. The label uses only bars
-after the cut, measured from the cut-end close:
+before and after the first bar that prints that dip, and only within
+``cut_vicinity_minutes`` of that dip (default 45). The label uses only bars
+after the cut:
 
-* ``label``: ``-1`` still falling; ``1`` recovers (``rise_pct`` above cut close);
-  ``0`` neither.
+* ``label``: ``1`` if the fee-aware sell target is reached (any high) within
+  ``label_horizon_minutes`` after the cut (default 30); ``-1`` if a later
+  session low prints a new trough (still falling); ``0`` neither.
 * ``sell_crossings_5d``: how many times 1m closes crossed *up through* the
   fee-aware target sell price (from ``entry_close`` / ``DEFAULT_TARGET_RETURN``)
   over the last five RTH sessions through the cut (no post-cut lookahead).
@@ -33,10 +35,12 @@ from tradingai.intraday.profit_target import (
 )
 
 DEFAULT_DATASET_DIP_PCT = 4.0
-DEFAULT_DATASET_RISE_PCT = 0.4
+DEFAULT_DATASET_RISE_PCT = 0.4  # retained in sample rows for compatibility
 DEFAULT_CUTS_BEFORE = 4
 DEFAULT_CUTS_AFTER = 4
-DEFAULT_MIN_HORIZON_MINUTES = 15
+DEFAULT_LABEL_HORIZON_MINUTES = 30
+DEFAULT_MIN_HORIZON_MINUTES = DEFAULT_LABEL_HORIZON_MINUTES
+DEFAULT_CUT_VICINITY_MINUTES = 45
 DEFAULT_CROSSING_SESSIONS = 5
 
 SAMPLE_COLUMNS = (
@@ -144,12 +148,19 @@ def sample_cut_ends(
     n_after: int,
     min_horizon_minutes: int,
     rng: np.random.Generator,
+    *,
+    vicinity_minutes: int = DEFAULT_CUT_VICINITY_MINUTES,
 ) -> list[tuple[pd.Timestamp, str]]:
     """Random cut ends strictly before and after ``anchor_time``.
 
-    A bar is eligible only when at least ``min_horizon_minutes`` later bars
-    remain. The anchor bar itself is never chosen. If a side has fewer
-    eligible bars than requested, every eligible bar on that side is used.
+    A bar is eligible only when:
+    * it is within ``vicinity_minutes`` of the dip anchor (exclusive of the
+      anchor itself), and
+    * at least ``min_horizon_minutes`` later bars remain.
+
+    If a side has fewer eligible bars than requested, every eligible bar on
+    that side is used. ``vicinity_minutes <= 0`` disables the window and keeps
+    the whole-session pool (still excluding the anchor / horizon).
     """
     if not isinstance(rng, np.random.Generator):
         raise TypeError("rng must be numpy.random.Generator")
@@ -161,10 +172,16 @@ def sample_cut_ends(
     if last_eligible < 0:
         return []
     anchor = _as_index_timestamp(anchor_time, work.index)
+    vicinity = max(0, int(vicinity_minutes))
+    window = pd.Timedelta(minutes=vicinity) if vicinity > 0 else None
     before: list[int] = []
     after: list[int] = []
     for position in range(last_eligible + 1):
         stamp = work.index[position]
+        if window is not None:
+            delta = abs(pd.Timestamp(stamp) - anchor)
+            if delta > window:
+                continue
         if stamp < anchor:
             before.append(position)
         elif stamp > anchor:
@@ -212,19 +229,24 @@ def label_cut(
     bars: pd.DataFrame,
     cut_end: pd.Timestamp,
     entry_close: float,
-    rise_pct: float = DEFAULT_DATASET_RISE_PCT,
+    *,
+    sell_target: float | None = None,
+    label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
+    rise_pct: float | None = None,
 ) -> tuple[int, float | None]:
     """Ternary label from post-cut bars only.
 
-    * ``-1`` if any later low is strictly below the running session low through
-      ``cut_end`` (still in the falling regime toward a deeper trough).
-    * ``1`` if a later high is ``rise_pct`` percent above ``entry_close``
-      (the cut-end close).
+    * ``1`` if any high within ``label_horizon_minutes`` after ``cut_end``
+      reaches the fee-aware ``sell_target`` (computed from ``entry_close`` when
+      omitted).
+    * ``-1`` if any later low (rest of session) is strictly below the running
+      session low through ``cut_end`` and the sell target was not hit in time.
     * ``0`` otherwise.
 
-    Falling (``-1``) takes precedence when both a later new low and a later rise
-    occur. Returns ``(label, max future high)``.
+    ``rise_pct`` is accepted only for backward-compatible callers and is
+    ignored. Returns ``(label, max high in the label horizon)``.
     """
+    del rise_pct  # unused; kept so older call sites still type-check at runtime
     if entry_close is None or not math.isfinite(entry_close) or entry_close <= 0:
         return 0, None
     work = _sorted_bars(bars)
@@ -236,18 +258,30 @@ def label_cut(
     future = work.loc[work.index > end]
     if future.empty:
         return 0, None
-    future_high = future["high"].astype(float)
-    future_high = future_high[np.isfinite(future_high.to_numpy())]
+
+    horizon = max(0, int(label_horizon_minutes))
+    horizon_end = end + pd.Timedelta(minutes=horizon)
+    window = future.loc[future.index <= horizon_end]
+    window_high = window["high"].astype(float) if not window.empty else pd.Series(dtype=float)
+    window_high = window_high[np.isfinite(window_high.to_numpy())]
+    max_high = float(window_high.max()) if not window_high.empty else None
+
+    if sell_target is None:
+        target = target_sell_price_for_entry(float(entry_close))
+    else:
+        target = float(sell_target)
+    if (
+        max_high is not None
+        and math.isfinite(target)
+        and max_high + 1e-9 >= target
+    ):
+        return 1, max_high
+
     future_low = future["low"].astype(float)
     future_low = future_low[np.isfinite(future_low.to_numpy())]
-    if future_high.empty:
-        return 0, None
-    max_high = float(future_high.max())
     if not future_low.empty and float(future_low.min()) < trough_so_far - 1e-9:
         return -1, max_high
-    target = float(entry_close) * (1.0 + float(rise_pct) / 100.0)
-    label = 1 if max_high + 1e-9 >= target else 0
-    return label, max_high
+    return 0, max_high
 
 
 def target_sell_price_for_entry(
@@ -347,6 +381,8 @@ def assemble_cuts(
     cuts_before: int = DEFAULT_CUTS_BEFORE,
     cuts_after: int = DEFAULT_CUTS_AFTER,
     min_horizon_minutes: int = DEFAULT_MIN_HORIZON_MINUTES,
+    label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
+    cut_vicinity_minutes: int = DEFAULT_CUT_VICINITY_MINUTES,
     crossing_sessions: int = DEFAULT_CROSSING_SESSIONS,
     seed: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
@@ -354,6 +390,11 @@ def assemble_cuts(
 
     ``sessions`` items are ``(ticker, session_date, rth_bars, prior_close)``.
     One seeded generator is advanced in the given session order.
+
+    Cut ends are drawn within ``cut_vicinity_minutes`` of the dip anchor.
+    Positive labels require the fee-aware sell target within
+    ``label_horizon_minutes`` after the cut. Cut eligibility keeps at least
+    ``max(min_horizon_minutes, label_horizon_minutes)`` bars after the cut.
 
     ``sell_crossings_5d`` counts upward close-to-close crosses (below → above)
     of the fee-aware target sell price (from ``entry_close`` /
@@ -365,6 +406,7 @@ def assemble_cuts(
     bar_rows: list[dict] = []
     qualifying = 0
     sample_id = 0
+    horizon_for_cuts = max(int(min_horizon_minutes), int(label_horizon_minutes))
     session_histories: dict[str, deque[pd.DataFrame]] = defaultdict(
         lambda: deque(maxlen=max(1, int(crossing_sessions)))
     )
@@ -379,8 +421,9 @@ def assemble_cuts(
             anchor.anchor_time,
             cuts_before,
             cuts_after,
-            min_horizon_minutes,
+            horizon_for_cuts,
             rng,
+            vicinity_minutes=cut_vicinity_minutes,
         )
         qualifying += 1
         if not cuts:
@@ -389,8 +432,14 @@ def assemble_cuts(
         history = list(session_histories[key])
         for cut_end, side in cuts:
             entry_close = float(ordered.loc[cut_end, "close"])
-            label, max_high = label_cut(ordered, cut_end, entry_close, rise_pct)
             sell_price = target_sell_price_for_entry(entry_close)
+            label, max_high = label_cut(
+                ordered,
+                cut_end,
+                entry_close,
+                sell_target=sell_price,
+                label_horizon_minutes=label_horizon_minutes,
+            )
             crossing_bars = recent_session_window(
                 history,
                 cut_end,

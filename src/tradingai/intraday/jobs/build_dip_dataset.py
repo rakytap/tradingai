@@ -19,11 +19,14 @@ from tradingai.data.repositories.intraday_bars import (
     load_intraday_bars,
 )
 from tradingai.intraday.bars import prior_daily_close, rth_open_for_day
+from tradingai.intraday.dip_charts import write_dip_dataset_viz
 from tradingai.intraday.dip_dataset import (
     DEFAULT_CUTS_AFTER,
     DEFAULT_CUTS_BEFORE,
+    DEFAULT_CUT_VICINITY_MINUTES,
     DEFAULT_DATASET_DIP_PCT,
     DEFAULT_DATASET_RISE_PCT,
+    DEFAULT_LABEL_HORIZON_MINUTES,
     DEFAULT_MIN_HORIZON_MINUTES,
     assemble_cuts,
     split_rth_sessions,
@@ -31,6 +34,7 @@ from tradingai.intraday.dip_dataset import (
 )
 
 DEFAULT_OUT_DIR = Path("data/dip_dataset")
+DEFAULT_VIZ_COUNT = 20
 
 
 def resolve_prior_close(
@@ -59,8 +63,11 @@ def build_dip_dataset(
     cuts_before: int = DEFAULT_CUTS_BEFORE,
     cuts_after: int = DEFAULT_CUTS_AFTER,
     min_horizon_minutes: int = DEFAULT_MIN_HORIZON_MINUTES,
+    label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
+    cut_vicinity_minutes: int = DEFAULT_CUT_VICINITY_MINUTES,
     seed: int = 0,
     out_dir: Path | str = DEFAULT_OUT_DIR,
+    viz_count: int = DEFAULT_VIZ_COUNT,
 ) -> dict:
     initialize_schema()
     if tickers:
@@ -98,9 +105,24 @@ def build_dip_dataset(
         cuts_before=cuts_before,
         cuts_after=cuts_after,
         min_horizon_minutes=min_horizon_minutes,
+        label_horizon_minutes=label_horizon_minutes,
+        cut_vicinity_minutes=cut_vicinity_minutes,
         seed=seed,
     )
     destination = write_dip_dataset(samples, bars, out_dir)
+    viz_dir = None
+    if int(viz_count) > 0 and not samples.empty:
+        session_map = {
+            (str(ticker).upper(), day): frame for ticker, day, frame, _prior in sessions
+        }
+        viz_dir = write_dip_dataset_viz(
+            samples,
+            bars,
+            Path(destination) / "viz",
+            sessions=session_map,
+            n=int(viz_count),
+            seed=seed,
+        )
     log_done(
         "tradingai-build-dip-dataset",
         qualifying,
@@ -119,8 +141,12 @@ def build_dip_dataset(
         "cuts_before": int(cuts_before),
         "cuts_after": int(cuts_after),
         "min_horizon_minutes": int(min_horizon_minutes),
+        "label_horizon_minutes": int(label_horizon_minutes),
+        "cut_vicinity_minutes": int(cut_vicinity_minutes),
         "seed": int(seed),
         "out_dir": str(destination),
+        "viz_count": int(viz_count),
+        "viz_dir": None if viz_dir is None else str(viz_dir),
         "errors": errors,
     }
 
@@ -143,9 +169,37 @@ def main() -> None:
         "--min-horizon-minutes",
         type=int,
         default=DEFAULT_MIN_HORIZON_MINUTES,
+        help=(
+            "Require at least this many post-cut bars when sampling cuts "
+            f"(default {DEFAULT_MIN_HORIZON_MINUTES}; raised to label horizon)."
+        ),
+    )
+    parser.add_argument(
+        "--label-horizon-minutes",
+        type=int,
+        default=DEFAULT_LABEL_HORIZON_MINUTES,
+        help=(
+            "Minutes after the cut in which hitting the sell target counts as "
+            f"label=1 (default {DEFAULT_LABEL_HORIZON_MINUTES})."
+        ),
+    )
+    parser.add_argument(
+        "--cut-vicinity-minutes",
+        type=int,
+        default=DEFAULT_CUT_VICINITY_MINUTES,
+        help=(
+            "Only sample cut ends within this many minutes of the dip "
+            f"(default {DEFAULT_CUT_VICINITY_MINUTES}; 0 = whole session)."
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--viz-count",
+        type=int,
+        default=DEFAULT_VIZ_COUNT,
+        help="Stratified sample charts to write under out/viz (0 disables).",
+    )
     args = parser.parse_args()
     try:
         result = build_dip_dataset(
@@ -155,8 +209,11 @@ def main() -> None:
             cuts_before=args.cuts_before,
             cuts_after=args.cuts_after,
             min_horizon_minutes=args.min_horizon_minutes,
+            label_horizon_minutes=args.label_horizon_minutes,
+            cut_vicinity_minutes=args.cut_vicinity_minutes,
             seed=args.seed,
             out_dir=args.out,
+            viz_count=args.viz_count,
         )
     except Exception as exc:
         print(str(exc), file=sys.stderr)
