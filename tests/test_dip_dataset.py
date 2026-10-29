@@ -26,7 +26,10 @@ from tradingai.intraday.jobs.backfill_intraday_bars import (
     last_completed_session_day,
     weekday_sessions,
 )
-from tradingai.intraday.jobs.build_dip_dataset import resolve_prior_close
+from tradingai.intraday.jobs.build_dip_dataset import (
+    resolve_prior_close,
+    resolve_sim_prior_close,
+)
 from tradingai.providers.ibkr_tws import format_ib_end_datetime
 
 ET = ZoneInfo("America/New_York")
@@ -81,19 +84,116 @@ def _recovery_session() -> pd.DataFrame:
     return _bars(lows, closes, highs=highs)
 
 
-def test_find_dip_anchor_is_first_bar_at_or_below_96():
-    bars = _bars(
-        lows=[99.0, 97.0, 96.0, 95.0],
-        closes=[99.0, 97.0, 96.0, 95.0],
+def _valley_session(
+    *,
+    early_bottom: float = 97.0,
+    mid_bottom: float = 95.0,
+    late_bottom: float = 90.0,
+    n_morning: int = 100,
+    n_afternoon: int = 50,
+) -> pd.DataFrame:
+    """Two morning valleys then a deeper afternoon print outside the window."""
+    closes: list[float] = []
+    lows: list[float] = []
+    highs: list[float] = []
+    # Climb / shallow valley around bar 20.
+    for i in range(40):
+        if i < 20:
+            close = 100.0 - (100.0 - early_bottom) * (i / 20.0)
+        else:
+            close = early_bottom + (100.0 - early_bottom) * ((i - 20) / 20.0)
+        closes.append(close)
+        lows.append(close - 0.05)
+        highs.append(close + 0.05)
+    lows[20] = early_bottom
+    # Deeper, more pronounced valley around bar 60.
+    for i in range(40, n_morning):
+        if i < 60:
+            close = 100.0 - (100.0 - mid_bottom) * ((i - 40) / 20.0)
+        else:
+            close = mid_bottom + (100.0 - mid_bottom) * ((i - 60) / 20.0)
+        closes.append(close)
+        lows.append(close - 0.05)
+        highs.append(close + 0.05)
+    lows[60] = mid_bottom
+    # Afternoon dump deeper than either morning valley — must not become the dip.
+    for i in range(n_afternoon):
+        close = 100.0 - (100.0 - late_bottom) * min(1.0, i / 20.0)
+        closes.append(close)
+        lows.append(min(close, late_bottom) if i >= 20 else close - 0.05)
+        highs.append(close + 0.05)
+    lows[n_morning + 25] = late_bottom
+    return _bars(lows, closes, highs=highs)
+
+
+def test_find_dip_anchor_picks_most_pronounced_morning_valley():
+    bars = _valley_session()
+    anchor = find_dip_anchor(
+        bars,
+        prior_close=100.0,
+        dip_pct=4.0,
+        valley_window_minutes=90,
+        valley_order_minutes=5,
     )
+    assert anchor is not None
+    assert anchor.anchor_time == bars.index[60]
+    assert anchor.anchor_low == 95.0
+    assert anchor.dip_pct == -5.0
+    # Afternoon low is deeper but outside the valley window.
+    assert float(bars["low"].min()) == 90.0
+
+
+def test_find_dip_anchor_ignores_session_wide_low_after_window():
+    bars = _valley_session(mid_bottom=95.5, late_bottom=80.0)
     anchor = find_dip_anchor(bars, prior_close=100.0, dip_pct=4.0)
     assert anchor is not None
-    assert anchor.anchor_time == bars.index[2]
-    assert anchor.anchor_low == 96.0
-    assert anchor.dip_pct == -4.0
+    assert anchor.anchor_time < bars.index[90]
+    assert anchor.anchor_low > 80.0
 
-    shallow = _bars(lows=[99.0, 97.0, 96.01], closes=[99.0, 97.0, 96.01])
-    assert find_dip_anchor(shallow, prior_close=100.0, dip_pct=4.0) is None
+
+def test_find_dip_anchor_rejects_shallow_morning():
+    bars = _bars(
+        lows=[99.0] * 40 + [98.5] + [99.0] * 40,
+        closes=[99.0] * 40 + [98.5] + [99.0] * 40,
+    )
+    assert find_dip_anchor(bars, prior_close=100.0, dip_pct=4.0) is None
+
+
+def test_find_dip_anchor_prefers_open_washout_by_right_bounce():
+    """CHWY-like: sharp open dip with tiny left side beats a later shallower valley."""
+    closes: list[float] = []
+    lows: list[float] = []
+    highs: list[float] = []
+    # Bar 0 open, bar 2 washout to 91, quick bounce to 98.
+    path = [100.0, 96.0, 91.0, 94.0, 97.0, 98.0]
+    for close in path:
+        closes.append(close)
+        lows.append(close - 0.05)
+        highs.append(close + 0.05)
+    lows[2] = 91.0
+    # Later mid-morning valley to 94 with a smaller right bounce.
+    for i in range(6, 90):
+        if i < 40:
+            close = 98.0
+        elif i < 50:
+            close = 98.0 - (98.0 - 94.0) * ((i - 40) / 10.0)
+        else:
+            close = 94.0 + (97.0 - 94.0) * min(1.0, (i - 50) / 15.0)
+        closes.append(close)
+        lows.append(close - 0.05)
+        highs.append(close + 0.05)
+    lows[45] = 94.0
+    bars = _bars(lows, closes, highs=highs)
+    anchor = find_dip_anchor(
+        bars,
+        prior_close=100.0,
+        dip_pct=4.0,
+        valley_window_minutes=90,
+        valley_order_minutes=5,
+    )
+    assert anchor is not None
+    assert anchor.anchor_time == bars.index[2]
+    assert anchor.anchor_low == 91.0
 
 
 def test_sample_cut_ends_avoids_anchor_and_horizon():
@@ -187,32 +287,29 @@ def test_build_cut_starts_with_prior_close_and_stops_at_cut_end():
     assert cut.index[-1] <= cut_end
 
 
-def test_label_cut_falling_when_new_low_and_no_timely_sell():
+def test_label_cut_before_dip_is_always_negative():
     bars = _recovery_session()
-    # Still falling: later bars print a new low (95); sell target not hit in 30m.
-    pre_end = bars.index[0]
-    pre_label, pre_high = label_cut(bars, pre_end, entry_close=100.0)
-    assert pre_label == -1
-    # Max high is only within the 30-minute label window (not the later 110 spike).
-    assert pre_high is not None and pre_high < 110.0
-
-    # After the trough, no new low and highs stay below the sell target → 0.
-    late_end = bars.index[40]
-    late_close = float(bars.loc[late_end, "close"])
-    sell = target_sell_price_for_entry(late_close)
-    late_label, late_high = label_cut(
+    dip = bars.index[20]
+    pre_end = bars.index[10]
+    # Even if a later high would clear a sell target, plunging-side cuts are -1.
+    label, _high = label_cut(
         bars,
-        late_end,
-        entry_close=late_close,
-        sell_target=sell,
+        pre_end,
+        entry_close=float(bars.loc[pre_end, "close"]),
+        side="before",
+        anchor_time=dip,
     )
-    assert late_close == 100.0
-    assert late_high == 100.05
-    assert late_high < sell
-    assert late_label == 0
+    assert label == -1
+    label_by_anchor, _ = label_cut(
+        bars,
+        pre_end,
+        entry_close=float(bars.loc[pre_end, "close"]),
+        anchor_time=dip,
+    )
+    assert label_by_anchor == -1
 
 
-def test_label_cut_sell_target_within_horizon_is_positive():
+def test_label_cut_after_dip_sell_target_within_horizon_is_positive():
     bars = _recovery_session()
     # First bar at the trough (low 95); within 30m a high of 110 clears the sell tgt.
     trough_end = bars.index[20]
@@ -222,6 +319,8 @@ def test_label_cut_sell_target_within_horizon_is_positive():
         bars,
         trough_end,
         entry_close=entry,
+        side="after",
+        anchor_time=trough_end,
         sell_target=sell,
         label_horizon_minutes=30,
     )
@@ -230,7 +329,27 @@ def test_label_cut_sell_target_within_horizon_is_positive():
     assert label == 1
 
 
-def test_label_cut_sell_target_after_horizon_is_not_positive():
+def test_label_cut_after_dip_missed_sell_target_is_zero():
+    bars = _recovery_session()
+    late_end = bars.index[40]
+    late_close = float(bars.loc[late_end, "close"])
+    sell = target_sell_price_for_entry(late_close)
+    label, max_high = label_cut(
+        bars,
+        late_end,
+        entry_close=late_close,
+        side="after",
+        anchor_time=bars.index[20],
+        sell_target=sell,
+        label_horizon_minutes=30,
+    )
+    assert late_close == 100.0
+    assert max_high == 100.05
+    assert max_high < sell
+    assert label == 0
+
+
+def test_label_cut_sell_target_after_horizon_is_zero():
     bars = _recovery_session()
     trough_end = bars.index[20]
     entry = float(bars.loc[trough_end, "close"])
@@ -240,11 +359,12 @@ def test_label_cut_sell_target_after_horizon_is_not_positive():
         bars,
         trough_end,
         entry_close=entry,
+        side="after",
         sell_target=sell,
         label_horizon_minutes=5,
     )
     assert max_high is not None and max_high < sell
-    assert label in (-1, 0)
+    assert label == 0
 
 
 def test_count_level_crossings_close_to_close():
@@ -323,10 +443,16 @@ def test_assemble_cuts_labels_match_future_high_and_keep_the_prefix():
             bars,
             row.cut_end,
             row.entry_close,
+            side=row.side,
+            anchor_time=anchor.anchor_time,
             sell_target=float(row.target_sell_price),
             label_horizon_minutes=5,
         )
         assert row.label == expected
+        if row.side == "before":
+            assert row.label == -1
+        else:
+            assert row.label in (0, 1)
         assert row.cut_end != anchor.anchor_time
         window = cut_bars[cut_bars["sample_id"] == row.sample_id].sort_values("seq")
         assert bool(window.iloc[0]["is_prior_close"]) is True
@@ -363,6 +489,23 @@ def test_resolve_prior_close_uses_daily_then_previous_session():
     )
     assert resolve_prior_close("AAA", date(2026, 10, 15), daily, history) == 99.0
     assert resolve_prior_close("AAA", date(2026, 10, 15), [], history) == 77.0
+
+
+def test_resolve_sim_prior_close_falls_back_to_previous_session(monkeypatch):
+    history = _bars(
+        lows=[77.0],
+        closes=[77.0],
+        start=datetime(2026, 10, 13, 15, 59, tzinfo=ET),
+    )
+
+    def _no_sim_prior(ticker, session_day, *, database_url=None):
+        return None
+
+    monkeypatch.setattr(
+        "tradingai.intraday.jobs.build_dip_dataset.load_sim_prior_close",
+        _no_sim_prior,
+    )
+    assert resolve_sim_prior_close("AAA", date(2026, 10, 15), history) == 77.0
 
 
 def test_weekday_sessions_and_last_completed_day():

@@ -724,18 +724,33 @@ Requires TWS or IB Gateway with the socket API enabled. Uses `TRADINGAI_IBKR_HOS
 | Tool | Description |
 |------|-------------|
 | `get_last_trades` | Recent fills via `reqExecutions` (`limit`, `side` buy/sell/all, optional `symbol` / `account`) |
+| `buy_stock_budget` | **LIMIT** buy sized to a cash budget (default mid price, spend **95%** of `total_budget`, integer shares, default **1%** STP child); **dry-run by default** |
 | `buy_stock` | Buy SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
+| `sell_stock_trail` | **TRAIL LIMIT** sell (default: full position, fee-aware target limit, **0.05%** trail); **dry-run by default** |
 | `sell_stock` | Sell SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
 
 Example prompts:
 
 ```
 Use tradingai-ibkr to get the last 25 trades.
+Use tradingai-ibkr buy_stock_budget for AAPL total_budget 20000 dry_run true.
 Use tradingai-ibkr buy_stock for AAPL quantity 1 dry_run true.
 Use tradingai-ibkr sell_stock for MSFT quantity 5 order_type LMT limit_price 530 dry_run true.
 ```
 
 After changing order-related env vars, restart the `tradingai-ibkr` MCP server.
+
+CLI (same sizing rules; dry-run unless `--submit`):
+
+```bash
+tradingai-buy COIN --price 170 --budget 6000
+tradingai-buy AAPL                          # mid price, default budget
+tradingai-buy COIN --price 170 --budget 6000 --submit   # live (ALLOW_ORDERS=1)
+
+tradingai-sell COIN                         # TRAIL LIMIT, full position, fee-aware target, 0.05% trail
+tradingai-sell COIN --qty 33 --price 170.65 --trail-percent 0.05
+tradingai-sell COIN --submit                # live (ALLOW_ORDERS=1)
+```
 
 ---
 

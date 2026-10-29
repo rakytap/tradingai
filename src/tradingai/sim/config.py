@@ -10,6 +10,8 @@ from typing import Any
 _PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_SIM_CONFIG_PATH = _PACKAGE_DIR / "dip_sim.toml"
 _SCHEMA_PATH = _PACKAGE_DIR / "schema.sql"
+_DATA_UNIVERSE_DIR = _PACKAGE_DIR.parent / "data" / "universe"
+DEFAULT_SIM_UNIVERSE_FILE = _DATA_UNIVERSE_DIR / "us_equities_3000.txt"
 
 # Fallback constants if the TOML file is missing (keep in sync with dip_sim.toml).
 DEFAULT_SIM_DATABASE_URL = "postgresql://localhost:5432/tradingai_sim"
@@ -94,6 +96,43 @@ def get_download_pace_seconds(*, config_path: str | None = None) -> float:
     if raw is None:
         return DEFAULT_DOWNLOAD_PACE_SECONDS
     return max(0.0, float(raw))
+
+
+def resolve_sim_universe_path(*, config_path: str | None = None) -> Path:
+    """Resolve ``[download].universe_file`` to an on-disk ticker list path."""
+    raw = _section("download", config_path).get("universe_file")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_SIM_UNIVERSE_FILE
+    path = Path(str(raw).strip()).expanduser()
+    if path.is_file():
+        return path
+    if not path.is_absolute():
+        cwd_candidate = Path.cwd() / path
+        if cwd_candidate.is_file():
+            return cwd_candidate
+        packaged = _DATA_UNIVERSE_DIR / path
+        if packaged.is_file():
+            return packaged
+        by_name = _DATA_UNIVERSE_DIR / path.name
+        if by_name.is_file():
+            return by_name
+    return path
+
+
+def get_sim_download_universe(*, config_path: str | None = None) -> tuple[str, ...]:
+    """Equity universe for ``tradingai-sim-download`` (not the live sync list)."""
+    from tradingai.data.config import load_tickers_from_file
+
+    path = resolve_sim_universe_path(config_path=config_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Sim download universe not found: {path}. "
+            "Set [download].universe_file in dip_sim.toml."
+        )
+    tickers = load_tickers_from_file(path)
+    if not tickers:
+        raise ValueError(f"Sim download universe is empty: {path}")
+    return tickers
 
 
 def get_sim_stop_loss(*, config_path: str | None = None) -> float:
@@ -283,6 +322,7 @@ __all__ = [
     "DEFAULT_REQUIRE_STATUS",
     "DEFAULT_SIM_CONFIG_PATH",
     "DEFAULT_SIM_DATABASE_URL",
+    "DEFAULT_SIM_UNIVERSE_FILE",
     "DEFAULT_START_CASH",
     "DEFAULT_STOP_LOSS",
     "DEFAULT_TARGET_RETURN",
@@ -300,6 +340,7 @@ __all__ = [
     "get_sim_config_path",
     "get_sim_database_url",
     "get_sim_dip_pct",
+    "get_sim_download_universe",
     "get_sim_entry_cutoff",
     "get_sim_exclude_first_bar_green",
     "get_sim_max_parabola_rel_rmse",
@@ -315,4 +356,5 @@ __all__ = [
     "get_sim_use_trail",
     "get_sim_window_minutes",
     "load_sim_config",
+    "resolve_sim_universe_path",
 ]

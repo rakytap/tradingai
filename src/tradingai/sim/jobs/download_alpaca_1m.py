@@ -10,7 +10,6 @@ from datetime import date, datetime, timedelta
 
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-from tradingai.data.config import get_sync_tickers
 from tradingai.data.jobs.progress import log_done, log_error, log_progress, log_start
 from tradingai.intraday.bars import bars_to_rows, filter_rth_session
 from tradingai.intraday.config import ET
@@ -22,6 +21,7 @@ from tradingai.sim.config import (
     get_download_days,
     get_download_pace_seconds,
     get_sim_database_url,
+    get_sim_download_universe,
 )
 from tradingai.sim.repository import (
     initialize_sim_schema,
@@ -99,7 +99,7 @@ def download_alpaca_1m(
     if tickers:
         universe = list(dict.fromkeys(t.upper() for t in tickers if t.strip()))
     else:
-        universe = list(get_sync_tickers())
+        universe = list(get_sim_download_universe(config_path=config_path))
     sessions = session_days_for_download(day_count)
     total = len(universe) * len(sessions)
     log_start("tradingai-sim-download", len(universe))

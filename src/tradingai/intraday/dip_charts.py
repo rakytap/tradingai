@@ -10,6 +10,9 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Mapping
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
@@ -248,7 +251,11 @@ def write_dip_dataset_viz(
     n: int = 20,
     seed: int = 0,
 ) -> Path:
-    """Write overview grid + per-sample PNGs under ``out_dir``."""
+    """Write overview grid + per-sample PNGs under ``out_dir``.
+
+    Uses the Agg backend and avoids ``constrained_layout`` (it can hang for
+    minutes on multi-panel date axes with full-session fills).
+    """
     destination = Path(out_dir)
     destination.mkdir(parents=True, exist_ok=True)
     for path in destination.glob("sample_*.png"):
@@ -259,61 +266,74 @@ def write_dip_dataset_viz(
         return destination
 
     selected.to_csv(destination / f"selected_{len(selected)}.csv", index=False)
+    print(f"dip viz: plotting {len(selected)} samples → {destination}", flush=True)
 
-    # Overview grid sized for up to 20 panels; grow rows as needed.
+    # Index once; full cut_bars frames are large after a universe build.
+    bars_by_id = {
+        int(sid): frame.sort_values("seq")
+        for sid, frame in cut_bars.groupby("sample_id", sort=False)
+        if int(sid) in set(int(x) for x in selected["sample_id"])
+    }
+
+    def _session_for(sample: pd.Series) -> pd.DataFrame:
+        return resolve_session_bars(
+            str(sample["ticker"]),
+            sample["session_date"],
+            sessions=sessions,
+            session_loader=session_loader,
+        )
+
+    # Per-sample panels first (simple single-axis figures; fail soft).
+    for i, sample in selected.iterrows():
+        sid = int(sample["sample_id"])
+        fig, ax = plt.subplots(figsize=(8, 3.4))
+        try:
+            plot_dip_sample(
+                ax,
+                sample,
+                session_bars=_session_for(sample),
+                cut_bars=bars_by_id.get(sid),
+            )
+            fig.tight_layout()
+            fig.savefig(
+                destination / f"sample_{i:02d}_{sample['ticker']}_{int(sample['label'])}.png",
+                dpi=120,
+            )
+        finally:
+            plt.close(fig)
+        print(f"dip viz: sample {i + 1}/{len(selected)}", flush=True)
+
+    # Overview grid without constrained_layout (avoids matplotlib hang).
     cols = 4
     rows = int(np.ceil(len(selected) / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3.4 * rows), constrained_layout=True)
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3.4 * rows))
     flat = np.atleast_1d(axes).ravel()
-
-    for i, sample in selected.iterrows():
-        ax = flat[i]
-        sid = int(sample["sample_id"])
-        session = resolve_session_bars(
-            str(sample["ticker"]),
-            sample["session_date"],
-            sessions=sessions,
-            session_loader=session_loader,
+    try:
+        for i, sample in selected.iterrows():
+            ax = flat[i]
+            sid = int(sample["sample_id"])
+            plot_dip_sample(
+                ax,
+                sample,
+                session_bars=_session_for(sample),
+                cut_bars=bars_by_id.get(sid),
+                show_legend=(i == 0),
+                title_fontsize=8,
+            )
+            ax.tick_params(labelsize=7)
+        for j in range(len(selected), len(flat)):
+            flat[j].axis("off")
+        label_counts = samples["label"].value_counts()
+        fig.suptitle(
+            f"Dip training cuts ({len(selected)} of {len(samples)}; full session; "
+            f"labels −1={int(label_counts.get(-1, 0))}, "
+            f"0={int(label_counts.get(0, 0))}, 1={int(label_counts.get(1, 0))})",
+            fontsize=12,
         )
-        cut = cut_bars[cut_bars["sample_id"] == sid].sort_values("seq")
-        plot_dip_sample(
-            ax,
-            sample,
-            session_bars=session,
-            cut_bars=cut,
-            show_legend=(i == 0),
-            title_fontsize=8,
-        )
-        ax.tick_params(labelsize=7)
-
-    for j in range(len(selected), len(flat)):
-        flat[j].axis("off")
-
-    label_counts = samples["label"].value_counts()
-    fig.suptitle(
-        f"Dip training cuts ({len(selected)} of {len(samples)}; full session; "
-        f"labels −1={int(label_counts.get(-1, 0))}, "
-        f"0={int(label_counts.get(0, 0))}, 1={int(label_counts.get(1, 0))})",
-        fontsize=12,
-    )
-    fig.savefig(destination / f"overview_{len(selected)}.png", dpi=140)
-    plt.close(fig)
-
-    for i, sample in selected.iterrows():
-        fig, ax = plt.subplots(figsize=(8, 3.4), constrained_layout=True)
-        sid = int(sample["sample_id"])
-        session = resolve_session_bars(
-            str(sample["ticker"]),
-            sample["session_date"],
-            sessions=sessions,
-            session_loader=session_loader,
-        )
-        cut = cut_bars[cut_bars["sample_id"] == sid].sort_values("seq")
-        plot_dip_sample(ax, sample, session_bars=session, cut_bars=cut)
-        fig.savefig(
-            destination / f"sample_{i:02d}_{sample['ticker']}_{int(sample['label'])}.png",
-            dpi=120,
-        )
+        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.savefig(destination / f"overview_{len(selected)}.png", dpi=120)
+        print(f"dip viz: wrote overview_{len(selected)}.png", flush=True)
+    finally:
         plt.close(fig)
 
     return destination

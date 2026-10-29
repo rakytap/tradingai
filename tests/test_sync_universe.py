@@ -7,6 +7,12 @@ from tradingai.data.config import (
     get_sync_tickers,
     load_tickers_from_file,
 )
+from tradingai.sim.config import (
+    DEFAULT_SIM_UNIVERSE_FILE,
+    clear_sim_config_cache,
+    get_sim_download_universe,
+    resolve_sim_universe_path,
+)
 
 
 def test_packaged_universe_has_about_1000_tickers():
@@ -14,6 +20,23 @@ def test_packaged_universe_has_about_1000_tickers():
     assert len(tickers) == 1000
     assert "AAPL" in tickers
     assert "SPY" not in tickers  # equities file, not ETF bench
+
+
+def test_packaged_sim_universe_has_about_3000_tickers():
+    tickers = load_tickers_from_file(DEFAULT_SIM_UNIVERSE_FILE)
+    assert len(tickers) == 3000
+    assert "AAPL" in tickers
+    assert "SPY" not in tickers
+
+
+def test_get_sim_download_universe_defaults_to_3000():
+    clear_sim_config_cache()
+    path = resolve_sim_universe_path()
+    assert path == DEFAULT_SIM_UNIVERSE_FILE
+    tickers = get_sim_download_universe()
+    assert len(tickers) == 3000
+    assert tickers[0] == "MMM"
+    clear_sim_config_cache()
 
 
 def test_get_sync_tickers_uses_file_when_env_unset(monkeypatch):

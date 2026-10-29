@@ -41,6 +41,8 @@ tradingai-news-mcp = "tradingai.news.server:main"
 tradingai-regime-mcp = "tradingai.regime.server:main"
 tradingai-predict-mcp = "tradingai.predict.server:main"
 tradingai-ibkr-mcp = "tradingai.ibkr.server:main"
+tradingai-buy = "tradingai.ibkr.jobs.buy_stock_budget:main"
+tradingai-sell = "tradingai.ibkr.jobs.sell_stock_trail:main"
 tradingai-predict-eval = "tradingai.predict.evaluation.runner:main"
 tradingai-tune-fusion = "tradingai.predict.jobs.tune_fusion_weights:main"
 tradingai-predict-batch = "tradingai.predict.jobs.generate_predictions:main"
@@ -72,6 +74,7 @@ packages = ["src/tradingai"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/tradingai/data/universe/us_equities_1000.txt" = "tradingai/data/universe/us_equities_1000.txt"
+"src/tradingai/data/universe/us_equities_3000.txt" = "tradingai/data/universe/us_equities_3000.txt"
 "src/tradingai/data/schema.sql" = "tradingai/data/schema.sql"
 "src/tradingai/sim/dip_sim.toml" = "tradingai/sim/dip_sim.toml"
 "src/tradingai/sim/schema.sql" = "tradingai/sim/schema.sql"

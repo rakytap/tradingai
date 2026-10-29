@@ -5,6 +5,7 @@ Not registered as the global TRADINGAI_DATA_PROVIDER — sync-only.
 
 from __future__ import annotations
 
+import math
 import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -21,6 +22,13 @@ from tradingai.intraday.config import (
     get_ibkr_host,
     get_ibkr_port,
 )
+
+# Fraction of total_budget spent on a budget limit buy (leave cash buffer).
+DEFAULT_BUDGET_FRACTION = 0.95
+# Attached SELL stop under the buy limit (fraction; 0.01 = 1%).
+DEFAULT_BUY_STOP_LOSS = 0.01
+# IB ``trailingPercent`` units are percent points (0.05 == 0.05%).
+DEFAULT_SELL_TRAIL_PERCENT = 0.05
 
 _PERIOD_RE = re.compile(r"^(\d+)\s*([a-zA-Z]+)$")
 
@@ -490,4 +498,697 @@ def place_equity_order(
             "log": [str(entry) for entry in (trade.log or [])][-8:],
             "fills": fills,
             "message": f"Order submitted to TWS ({order_status.status if order_status else 'unknown'}).",
+        }
+
+
+def _finite_positive(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        px = float(value)
+    except (TypeError, ValueError):
+        return None
+    if px != px or px <= 0.0:  # NaN or non-positive
+        return None
+    return px
+
+
+def round_us_equity_price(price: float, *, mode: str = "round") -> float:
+    """Round a USD equity price to a valid IB tick.
+
+    Stocks at/above $1 trade in $0.01 increments; below $1 in $0.0001.
+    ``mode``: ``round`` (nearest), ``ceil`` (up), or ``floor`` (down).
+    """
+    px = float(price)
+    if px != px or px <= 0.0:
+        raise ValueError(f"price must be positive, got {price!r}")
+    tick = 0.01 if px >= 1.0 else 0.0001
+    steps = px / tick
+    if mode == "ceil":
+        stepped = math.ceil(steps - 1e-12)
+    elif mode == "floor":
+        stepped = math.floor(steps + 1e-12)
+    elif mode == "round":
+        stepped = round(steps)
+    else:
+        raise ValueError(f"Unknown rounding mode {mode!r}")
+    # Avoid float dust (e.g. 843.4600000001).
+    decimals = 2 if tick >= 0.01 else 4
+    return round(stepped * tick, decimals)
+
+
+def round_us_equity_offset(offset: float) -> float:
+    """Round a dollar offset (e.g. TRAIL LIMIT lmtPriceOffset) to a cent tick."""
+    off = float(offset)
+    if off != off or off <= 0.0:
+        raise ValueError(f"offset must be positive, got {offset!r}")
+    # Offsets are always dollar increments for US stocks — never sub-penny.
+    return max(0.01, round(off, 2))
+
+
+def fetch_equity_mid_price(
+    symbol: str,
+    *,
+    wait_seconds: float = 1.5,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict:
+    """Fetch current mid (or bid/ask midpoint / last) for a SMART/USD equity."""
+    ticker = symbol.upper().strip()
+    if not ticker:
+        raise ValueError("symbol is required.")
+
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=True,
+    ) as ib:
+        contract = qualify_equity(ib, ticker)
+        tick = ib.reqMktData(contract, "", False, False)
+        try:
+            if wait_seconds > 0:
+                ib.sleep(wait_seconds)
+            mid = _finite_positive(tick.midpoint() if hasattr(tick, "midpoint") else None)
+            bid = _finite_positive(getattr(tick, "bid", None))
+            ask = _finite_positive(getattr(tick, "ask", None))
+            last = _finite_positive(getattr(tick, "last", None))
+            close = _finite_positive(getattr(tick, "close", None))
+            source = "mid"
+            price = mid
+            if price is None and bid is not None and ask is not None:
+                price = (bid + ask) / 2.0
+                source = "bid_ask_mid"
+            if price is None:
+                price = last
+                source = "last"
+            if price is None:
+                price = close
+                source = "close"
+            if price is None:
+                raise ValueError(
+                    f"No usable quote for {ticker} (mid/bid/ask/last/close empty)."
+                )
+            return {
+                "symbol": ticker,
+                "mid_price": round(float(price), 6),
+                "price_source": source,
+                "bid": bid,
+                "ask": ask,
+                "last": last,
+                "close": close,
+                "source": "ibkr_tws",
+            }
+        finally:
+            try:
+                ib.cancelMktData(contract)
+            except Exception:
+                pass
+
+
+def integer_shares_for_budget(budget_usd: float, price: float) -> int:
+    """Largest whole-share qty with ``qty * price <= budget_usd``."""
+    notion = float(budget_usd)
+    px = float(price)
+    if notion <= 0.0 or px <= 0.0:
+        return 0
+    return max(0, int(math.floor(notion / px)))
+
+
+def place_budget_limit_buy(
+    *,
+    symbol: str,
+    total_budget: float,
+    limit_price: float | None = None,
+    budget_fraction: float = DEFAULT_BUDGET_FRACTION,
+    stop_loss: float | None = DEFAULT_BUY_STOP_LOSS,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    account: str | None = None,
+    dry_run: bool = True,
+    allow_orders: bool = False,
+    max_shares: float = 1_000.0,
+    wait_seconds: float = 2.0,
+    quote_wait_seconds: float = 1.5,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict:
+    """Buy integer shares with a LIMIT order sized to a budget fraction.
+
+    Uses ``floor((total_budget * budget_fraction) / limit_price)`` shares.
+    When ``limit_price`` is omitted, fetches the current mid from TWS.
+    When ``stop_loss`` is set (default 1%), attaches a child SELL STP at
+    ``limit_price * (1 - stop_loss)``. Pass ``stop_loss=None`` or ``0`` to
+    skip the stop.
+    """
+    ticker = symbol.upper().strip()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    budget = float(total_budget)
+    if budget <= 0.0:
+        raise ValueError("total_budget must be positive.")
+    frac = float(budget_fraction)
+    if not (0.0 < frac <= 1.0):
+        raise ValueError("budget_fraction must be in (0, 1].")
+    spend = budget * frac
+
+    sl: float | None
+    if stop_loss is None or float(stop_loss) <= 0.0:
+        sl = None
+    else:
+        sl = float(stop_loss)
+        if sl >= 1.0:
+            raise ValueError("stop_loss must be a fraction in (0, 1), e.g. 0.01 for 1%.")
+
+    quote: dict | None = None
+    price = _finite_positive(limit_price)
+    if price is None:
+        quote = fetch_equity_mid_price(
+            ticker,
+            wait_seconds=quote_wait_seconds,
+            host=host,
+            port=port,
+            client_id=client_id,
+        )
+        price = float(quote["mid_price"])
+
+    # Buy limit / stop must be on valid IB ticks (Error 201 otherwise).
+    price = round_us_equity_price(float(price), mode="round")
+    qty = integer_shares_for_budget(spend, price)
+    stop_price = (
+        round_us_equity_price(float(price) * (1.0 - sl), mode="floor")
+        if sl is not None
+        else None
+    )
+    sizing = {
+        "symbol": ticker,
+        "total_budget": round(budget, 2),
+        "budget_fraction": frac,
+        "spend_budget": round(spend, 2),
+        "limit_price": price,
+        "quantity": qty,
+        "notional": round(qty * float(price), 2),
+        "stop_loss": sl,
+        "stop_price": stop_price,
+        "order_type": "LMT",
+        "side": "buy",
+        "quote": quote,
+    }
+    if qty < 1:
+        return {
+            **sizing,
+            "submitted": False,
+            "status": "rejected",
+            "error": (
+                f"Budget too small for 1 share at {price}: "
+                f"spend_budget={spend:.2f}."
+            ),
+            "dry_run": bool(dry_run),
+            "source": "ibkr_tws",
+            "disclaimer": (
+                "IBKR order helper. Real money risk if not on paper. "
+                "Not financial advice."
+            ),
+        }
+
+    # No stop → existing single-order path.
+    if sl is None:
+        order = place_equity_order(
+            symbol=ticker,
+            side="buy",
+            quantity=float(qty),
+            order_type="LMT",
+            limit_price=float(price),
+            tif=tif,
+            outside_rth=outside_rth,
+            account=account,
+            dry_run=dry_run,
+            allow_orders=allow_orders,
+            max_shares=max_shares,
+            wait_seconds=wait_seconds,
+            host=host,
+            port=port,
+            client_id=client_id,
+        )
+        return {**order, "sizing": sizing, "quote": quote}
+
+    tif_norm = (tif or "DAY").strip().upper()
+    preview = {
+        "symbol": ticker,
+        "side": "buy",
+        "quantity": float(qty),
+        "order_type": "LMT",
+        "limit_price": price,
+        "stop_loss": sl,
+        "stop_price": stop_price,
+        "tif": tif_norm,
+        "outside_rth": bool(outside_rth),
+        "account": account,
+        "exchange": "SMART",
+        "currency": "USD",
+        "dry_run": bool(dry_run),
+        "sizing": sizing,
+        "quote": quote,
+        "source": "ibkr_tws",
+        "disclaimer": (
+            "IBKR order helper. Real money risk if not on paper. "
+            "Not financial advice."
+        ),
+    }
+    if dry_run:
+        preview["status"] = "dry_run"
+        preview["submitted"] = False
+        preview["message"] = (
+            "Dry run only — parent LMT + child STP not sent. "
+            "Call with dry_run=false and TRADINGAI_IBKR_ALLOW_ORDERS=1 to place."
+        )
+        return preview
+
+    if not allow_orders:
+        raise PermissionError(
+            "Order placement blocked. Set TRADINGAI_IBKR_ALLOW_ORDERS=1 "
+            "and pass dry_run=false to submit."
+        )
+    if max_shares > 0.0 and qty > max_shares:
+        raise ValueError(
+            f"quantity {qty} exceeds max_shares={max_shares}. "
+            "Raise TRADINGAI_IBKR_MAX_ORDER_SHARES if intentional."
+        )
+
+    from ib_insync import LimitOrder, Stock, StopOrder
+
+    ib_symbol = ticker.replace(".", " ").replace("-", " ")
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=False,
+    ) as ib:
+        contract = Stock(ib_symbol, "SMART", "USD")
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise ValueError(f"IBKR could not qualify contract for {ticker}.")
+        contract = qualified[0]
+
+        parent = LimitOrder("BUY", qty, float(price))
+        parent.orderId = ib.client.getReqId()
+        parent.tif = tif_norm
+        parent.outsideRth = bool(outside_rth)
+        parent.transmit = False
+        if account:
+            parent.account = account.strip()
+
+        assert stop_price is not None
+        child = StopOrder("SELL", qty, float(stop_price))
+        child.parentId = parent.orderId
+        child.tif = tif_norm
+        child.outsideRth = bool(outside_rth)
+        child.transmit = True
+        if account:
+            child.account = account.strip()
+
+        parent_trade = ib.placeOrder(contract, parent)
+        child_trade = ib.placeOrder(contract, child)
+        if wait_seconds > 0:
+            ib.sleep(wait_seconds)
+
+        order_status = parent_trade.orderStatus
+        fills = [serialize_fill(fill) for fill in (parent_trade.fills or [])]
+        return {
+            **preview,
+            "status": order_status.status if order_status else "submitted",
+            "submitted": True,
+            "order_id": parent.orderId,
+            "stop_order_id": getattr(child_trade.order, "orderId", None),
+            "perm_id": parent_trade.order.permId if parent_trade.order else None,
+            "filled": float(order_status.filled) if order_status else 0.0,
+            "remaining": float(order_status.remaining) if order_status else float(qty),
+            "avg_fill_price": (
+                float(order_status.avgFillPrice) if order_status else None
+            ),
+            "why_held": getattr(order_status, "whyHeld", None) or None,
+            "log": [str(entry) for entry in (parent_trade.log or [])][-8:],
+            "fills": fills,
+            "message": (
+                f"Bracket submitted to TWS "
+                f"(parent={order_status.status if order_status else 'unknown'}, "
+                f"stop@{stop_price})."
+            ),
+        }
+
+
+def fetch_equity_position(
+    symbol: str,
+    *,
+    account: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict | None:
+    """Return the open SMART/USD equity position for ``symbol``, or None."""
+    ticker = symbol.upper().strip()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    account_filter = account.strip() if account else None
+
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=True,
+    ) as ib:
+        positions = list(ib.reqPositions() or [])
+        matches = []
+        for pos in positions:
+            contract = pos.contract
+            sym = (getattr(contract, "symbol", None) or "").upper()
+            local = (getattr(contract, "localSymbol", None) or "").upper()
+            sec = (getattr(contract, "secType", None) or "").upper()
+            if sec and sec != "STK":
+                continue
+            if sym != ticker and local.replace(" ", ".") != ticker and local != ticker:
+                continue
+            acct = getattr(pos, "account", None) or None
+            if account_filter and acct != account_filter:
+                continue
+            qty = float(pos.position)
+            if abs(qty) < 1e-12:
+                continue
+            matches.append(
+                {
+                    "symbol": ticker,
+                    "account": acct,
+                    "quantity": qty,
+                    "avg_cost": float(pos.avgCost) if pos.avgCost is not None else None,
+                    "sec_type": sec or "STK",
+                    "source": "ibkr_tws",
+                }
+            )
+        if not matches:
+            return None
+        # Prefer long inventory; otherwise first match.
+        longs = [m for m in matches if m["quantity"] > 0]
+        return longs[0] if longs else matches[0]
+
+
+def fetch_last_buy_price(
+    symbol: str,
+    *,
+    account: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict | None:
+    """Most recent buy fill price for ``symbol`` (session executions)."""
+    payload = fetch_recent_trades(
+        limit=100,
+        side="buy",
+        symbol=symbol,
+        account=account,
+        host=host,
+        port=port,
+        client_id=client_id,
+    )
+    trades = payload.get("trades") or []
+    if not trades:
+        return None
+    # fetch_recent_trades already newest-first
+    top = trades[0]
+    price = _finite_positive(top.get("price") or top.get("avg_price"))
+    if price is None:
+        return None
+    return {
+        "symbol": symbol.upper().strip(),
+        "buy_price": price,
+        "shares": float(top.get("shares") or 0.0),
+        "time": top.get("time"),
+        "account": top.get("account"),
+        "source": "ibkr_tws_execution",
+    }
+
+
+def place_trail_limit_sell(
+    *,
+    symbol: str,
+    quantity: float | None = None,
+    limit_price: float | None = None,
+    trail_percent: float = DEFAULT_SELL_TRAIL_PERCENT,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    account: str | None = None,
+    dry_run: bool = True,
+    allow_orders: bool = False,
+    max_shares: float = 1_000.0,
+    wait_seconds: float = 2.0,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    target_return: float | None = None,
+) -> dict:
+    """Sell with an IBKR TRAIL LIMIT order.
+
+    Defaults:
+    - quantity = full long position for the symbol
+    - limit_price = fee-aware sell target at ``target_return`` on last buy /
+      position avg cost (``TRADINGAI_OPEN_DIP_TARGET_RETURN`` / DEFAULT)
+    - trail_percent = 0.05 (IB percent points → 0.05%)
+    """
+    from ib_insync import Order, Stock
+
+    from tradingai.intraday.config import get_target_return
+    from tradingai.intraday.profit_target import fee_aware_sell_price
+
+    ticker = symbol.upper().strip()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    trail = float(trail_percent)
+    if trail <= 0.0:
+        raise ValueError("trail_percent must be positive.")
+
+    position = None
+    buy_info = None
+    buy_price = None
+
+    need_ib_meta = quantity is None or limit_price is None
+    if need_ib_meta or not dry_run:
+        # Position / last buy look-ups need TWS even for dry-run defaults.
+        if quantity is None or limit_price is None:
+            try:
+                position = fetch_equity_position(
+                    ticker,
+                    account=account,
+                    host=host,
+                    port=port,
+                    client_id=client_id,
+                )
+            except Exception as exc:
+                if quantity is None:
+                    raise ValueError(
+                        f"Could not load open position for {ticker}: {exc}"
+                    ) from exc
+            try:
+                buy_info = fetch_last_buy_price(
+                    ticker,
+                    account=account,
+                    host=host,
+                    port=port,
+                    client_id=client_id,
+                )
+            except Exception:
+                buy_info = None
+
+    if quantity is None:
+        if position is None or float(position["quantity"]) <= 0:
+            return {
+                "symbol": ticker,
+                "side": "sell",
+                "order_type": "TRAIL LIMIT",
+                "submitted": False,
+                "status": "rejected",
+                "error": f"No open long position found for {ticker}.",
+                "dry_run": bool(dry_run),
+                "source": "ibkr_tws",
+                "disclaimer": (
+                    "IBKR order helper. Real money risk if not on paper. "
+                    "Not financial advice."
+                ),
+            }
+        qty = float(math.floor(float(position["quantity"])))
+    else:
+        qty = float(quantity)
+    if qty <= 0:
+        raise ValueError("quantity must be positive.")
+    if max_shares > 0.0 and qty > max_shares:
+        raise ValueError(
+            f"quantity {qty} exceeds max_shares={max_shares}. "
+            "Raise TRADINGAI_IBKR_MAX_ORDER_SHARES if intentional."
+        )
+
+    if buy_info and buy_info.get("buy_price"):
+        buy_price = float(buy_info["buy_price"])
+        buy_source = "last_buy_fill"
+    elif position and position.get("avg_cost"):
+        buy_price = float(position["avg_cost"])
+        buy_source = "position_avg_cost"
+    else:
+        buy_source = None
+
+    ret = (
+        float(target_return)
+        if target_return is not None
+        else float(get_target_return())
+    )
+    target_meta = None
+    price = _finite_positive(limit_price)
+    if price is None:
+        if buy_price is None or buy_price <= 0:
+            raise ValueError(
+                "limit_price omitted and no last buy / avg cost available "
+                f"for {ticker}. Pass --price explicitly."
+            )
+        notional = buy_price * qty
+        target_meta = fee_aware_sell_price(
+            buy_price,
+            buy_notional_usd=notional,
+            net_return=ret,
+        )
+        # Ceil to next valid tick so we do not undershoot the fee-aware target.
+        price = round_us_equity_price(
+            float(target_meta["sell_price"]), mode="ceil"
+        )
+    else:
+        # Explicit limit must still be on a valid IB tick.
+        price = round_us_equity_price(float(price), mode="round")
+
+    # Dollar offset between stop and limit when the trail fires.
+    lmt_offset = round_us_equity_offset(
+        max(0.01, float(price) * (trail / 100.0))
+    )
+
+    sizing = {
+        "symbol": ticker,
+        "quantity": qty,
+        "limit_price": price,
+        "trail_percent": trail,
+        "lmt_price_offset": lmt_offset,
+        "trail_stop_price": price,
+        "buy_price": round(float(buy_price), 6) if buy_price else None,
+        "buy_price_source": buy_source,
+        "target_return": ret,
+        "target_meta": target_meta,
+        "position": position,
+        "order_type": "TRAIL LIMIT",
+        "side": "sell",
+    }
+
+    preview = {
+        "symbol": ticker,
+        "side": "sell",
+        "quantity": qty,
+        "order_type": "TRAIL LIMIT",
+        "limit_price": price,
+        "trail_percent": trail,
+        "lmt_price_offset": lmt_offset,
+        "trail_stop_price": price,
+        "tif": (tif or "DAY").strip().upper(),
+        "outside_rth": bool(outside_rth),
+        "account": account or (position.get("account") if position else None),
+        "exchange": "SMART",
+        "currency": "USD",
+        "dry_run": bool(dry_run),
+        "sizing": sizing,
+        "source": "ibkr_tws",
+        "disclaimer": (
+            "IBKR order helper. Real money risk if not on paper. "
+            "Not financial advice."
+        ),
+    }
+
+    if dry_run:
+        preview["status"] = "dry_run"
+        preview["submitted"] = False
+        preview["message"] = (
+            "Dry run only — order not sent. "
+            "Call with dry_run=false and TRADINGAI_IBKR_ALLOW_ORDERS=1 to place."
+        )
+        return preview
+
+    if not allow_orders:
+        raise PermissionError(
+            "Order placement blocked. Set TRADINGAI_IBKR_ALLOW_ORDERS=1 "
+            "and pass dry_run=false to submit."
+        )
+
+    ib_symbol = ticker.replace(".", " ").replace("-", " ")
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=False,
+    ) as ib:
+        contract = Stock(ib_symbol, "SMART", "USD")
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise ValueError(f"IBKR could not qualify contract for {ticker}.")
+        contract = qualified[0]
+
+        order = Order()
+        order.action = "SELL"
+        order.orderType = "TRAIL LIMIT"
+        order.totalQuantity = qty
+        order.trailingPercent = trail
+        order.lmtPriceOffset = float(lmt_offset)
+        order.trailStopPrice = float(price)
+        order.tif = (tif or "DAY").strip().upper()
+        order.outsideRth = bool(outside_rth)
+        acct = account or (position.get("account") if position else None)
+        if acct:
+            order.account = str(acct).strip()
+
+        trade = ib.placeOrder(contract, order)
+        if wait_seconds > 0:
+            ib.sleep(wait_seconds)
+
+        order_status = trade.orderStatus
+        status_name = order_status.status if order_status else "submitted"
+        fills = [serialize_fill(fill) for fill in (trade.fills or [])]
+        log_entries = [str(entry) for entry in (trade.log or [])][-8:]
+        rejected = status_name in {
+            "Inactive",
+            "Cancelled",
+            "ApiCancelled",
+            "Rejected",
+        } or any(
+            "Error 201" in entry or "Invalid Price" in entry
+            for entry in log_entries
+        )
+        if rejected:
+            msg = (
+                f"Order rejected by TWS ({status_name}). "
+                "Check log for Invalid Price / Error 201."
+            )
+        else:
+            msg = f"Order submitted to TWS ({status_name})."
+        return {
+            **preview,
+            "status": status_name,
+            "submitted": not rejected,
+            "order_id": trade.order.orderId if trade.order else None,
+            "perm_id": trade.order.permId if trade.order else None,
+            "filled": float(order_status.filled) if order_status else 0.0,
+            "remaining": float(order_status.remaining) if order_status else qty,
+            "avg_fill_price": (
+                float(order_status.avgFillPrice) if order_status else None
+            ),
+            "why_held": getattr(order_status, "whyHeld", None) or None,
+            "log": log_entries,
+            "fills": fills,
+            "message": msg,
+            "error": (
+                "Order rejected — Invalid Price or cancelled by IB."
+                if rejected
+                else None
+            ),
         }

@@ -1,14 +1,21 @@
-"""Training cuts for a 4% intraday dip near a fee-aware sell-target recovery.
+"""Training cuts around the most pronounced morning valley.
 
-Every sample comes from a regular session that eventually trades at least
-``dip_pct`` below the prior close. Cuts end at random 1-minute bars strictly
-before and after the first bar that prints that dip, and only within
-``cut_vicinity_minutes`` of that dip (default 45). The label uses only bars
-after the cut:
+Within the first ``valley_window_minutes`` of the RTH session (default 90),
+find the most pronounced valley on 1-minute lows, ranked by **right-side**
+bounce (left shoulder may be tiny, e.g. an open washout). The valley bottom
+is the dip anchor — not the session-wide low and not a cut end. Cuts are
+random 1-minute bars strictly before and after that dip, only within
+``cut_vicinity_minutes`` (default 45), ``cuts_before`` / ``cuts_after`` each
+(default 4). The valley must reach at least ``dip_pct`` below the prior close.
 
-* ``label``: ``1`` if the fee-aware sell target is reached (any high) within
-  ``label_horizon_minutes`` after the cut (default 30); ``-1`` if a later
-  session low prints a new trough (still falling); ``0`` neither.
+The label:
+
+* ``-1`` if the cut is on the plunging side of the valley (strictly before
+  the dip).
+* ``1`` if the cut is after the dip and the fee-aware sell target is reached
+  (any high) within ``label_horizon_minutes`` (default 30).
+* ``0`` if the cut is after the dip and the sell target is not reached in that
+  window.
 * ``sell_crossings_5d``: how many times 1m closes crossed *up through* the
   fee-aware target sell price (from ``entry_close`` / ``DEFAULT_TARGET_RETURN``)
   over the last five RTH sessions through the cut (no post-cut lookahead).
@@ -41,6 +48,8 @@ DEFAULT_CUTS_AFTER = 4
 DEFAULT_LABEL_HORIZON_MINUTES = 30
 DEFAULT_MIN_HORIZON_MINUTES = DEFAULT_LABEL_HORIZON_MINUTES
 DEFAULT_CUT_VICINITY_MINUTES = 45
+DEFAULT_VALLEY_WINDOW_MINUTES = 90  # first 1.5 RTH hours
+DEFAULT_VALLEY_ORDER_MINUTES = 5  # local-min half-width
 DEFAULT_CROSSING_SESSIONS = 5
 
 SAMPLE_COLUMNS = (
@@ -99,31 +108,105 @@ def _as_index_timestamp(value: pd.Timestamp, index: pd.DatetimeIndex) -> pd.Time
     return stamp.tz_convert(index.tz)
 
 
+def _morning_window(
+    bars: pd.DataFrame,
+    *,
+    valley_window_minutes: int = DEFAULT_VALLEY_WINDOW_MINUTES,
+) -> pd.DataFrame:
+    """Bars from the session open through the first ``valley_window_minutes``."""
+    work = _sorted_bars(bars)
+    if work.empty:
+        return work
+    minutes = max(1, int(valley_window_minutes))
+    start = pd.Timestamp(work.index[0])
+    end = start + pd.Timedelta(minutes=minutes)
+    # Inclusive of the bar that opens at ``end`` if present (e.g. 11:00 for 90m).
+    return work.loc[work.index <= end]
+
+
+def _valley_prominence(lows: np.ndarray, index: int) -> float:
+    """Right-shoulder rise after the valley bottom (left side may be tiny).
+
+    Score is ``max(lows[index:]) - lows[index]``. The left shoulder is not part
+    of the ranking — open washouts with little left structure can still win if
+    they bounce hard to the right.
+    """
+    right = lows[index:]
+    if right.size < 2:
+        return 0.0
+    right_peak = float(np.nanmax(right))
+    bottom = float(lows[index])
+    if not math.isfinite(right_peak) or not math.isfinite(bottom):
+        return 0.0
+    return float(right_peak - bottom)
+
+
 def find_dip_anchor(
     bars: pd.DataFrame,
     prior_close: float,
     dip_pct: float = DEFAULT_DATASET_DIP_PCT,
+    *,
+    valley_window_minutes: int = DEFAULT_VALLEY_WINDOW_MINUTES,
+    valley_order_minutes: int = DEFAULT_VALLEY_ORDER_MINUTES,
 ) -> DipAnchor | None:
-    """First bar whose running session low is at least ``dip_pct`` under prior close.
+    """Most pronounced valley bottom in the first ``valley_window_minutes``.
 
-    ``dip_pct`` is a positive percent (4 means −4%). The returned ``dip_pct``
-    is the running depth at that bar, in percent, and is negative.
+    A local minimum on 1-minute lows is scored by **right-side** recovery
+    inside the morning window (how far lows bounce after the trough). The left
+    shoulder may be only a few bars. Candidates need ``valley_order_minutes`` of
+    bars on the right; the left side only needs at least one prior bar. The
+    highest right-rise valley whose low is at least ``dip_pct`` under
+    ``prior_close`` becomes the dip. Post-window bars are never used.
+
+    ``dip_pct`` is a positive percent (4 means −4%). The returned ``dip_pct`` is
+    the valley depth vs prior close, in percent, and is negative.
     """
-    work = _sorted_bars(bars)
-    if work.empty or "low" not in work.columns:
-        return None
     if prior_close is None or not math.isfinite(prior_close) or prior_close <= 0:
         return None
-    running = work["low"].astype(float).cummin()
-    depth_pct = (running / float(prior_close) - 1.0) * 100.0
-    threshold = -abs(float(dip_pct))
-    hit = depth_pct <= threshold + 1e-6
-    if not bool(hit.any()):
+    morning = _morning_window(bars, valley_window_minutes=valley_window_minutes)
+    if morning.empty or "low" not in morning.columns:
         return None
-    position = int(np.flatnonzero(hit.to_numpy())[0])
-    anchor_time = pd.Timestamp(work.index[position])
-    anchor_low = float(running.iloc[position])
-    depth = round(float(depth_pct.iloc[position]), 4)
+    lows = morning["low"].astype(float).to_numpy()
+    n = int(lows.size)
+    order = max(1, int(valley_order_minutes))
+    # Need ≥1 bar on the left and ``order`` bars on the right.
+    if n < order + 2:
+        return None
+
+    threshold = float(prior_close) * (1.0 - abs(float(dip_pct)) / 100.0)
+    best_i: int | None = None
+    best_prom = -1.0
+    best_low = math.inf
+    for i in range(1, n - order):
+        value = float(lows[i])
+        if not math.isfinite(value) or value > threshold + 1e-9:
+            continue
+        # Local min with asymmetric neighborhood: full ``order`` on the right,
+        # only the available left span (may be smaller than ``order``).
+        left_span = min(order, i)
+        neighborhood = lows[i - left_span : i + order + 1]
+        if float(np.nanmin(neighborhood)) < value - 1e-12:
+            continue
+        if np.any(lows[i - left_span : i] <= value + 1e-12):
+            continue
+        if value > float(lows[i - 1]) + 1e-12 or value > float(lows[i + 1]) + 1e-12:
+            continue
+        prom = _valley_prominence(lows, i)
+        if prom <= 0.0:
+            continue
+        if (
+            prom > best_prom + 1e-12
+            or (abs(prom - best_prom) <= 1e-12 and value < best_low - 1e-12)
+        ):
+            best_i = i
+            best_prom = prom
+            best_low = value
+
+    if best_i is None:
+        return None
+    anchor_time = pd.Timestamp(morning.index[best_i])
+    anchor_low = float(lows[best_i])
+    depth = round((anchor_low / float(prior_close) - 1.0) * 100.0, 4)
     return DipAnchor(
         anchor_time=anchor_time,
         anchor_low=round(anchor_low, 6),
@@ -230,42 +313,52 @@ def label_cut(
     cut_end: pd.Timestamp,
     entry_close: float,
     *,
+    side: str | None = None,
+    anchor_time: pd.Timestamp | None = None,
     sell_target: float | None = None,
     label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
     rise_pct: float | None = None,
 ) -> tuple[int, float | None]:
-    """Ternary label from post-cut bars only.
+    """Ternary label for a cut relative to the valley dip.
 
-    * ``1`` if any high within ``label_horizon_minutes`` after ``cut_end``
-      reaches the fee-aware ``sell_target`` (computed from ``entry_close`` when
-      omitted).
-    * ``-1`` if any later low (rest of session) is strictly below the running
-      session low through ``cut_end`` and the sell target was not hit in time.
-    * ``0`` otherwise.
+    * ``-1`` if the cut is on the plunging side (``side=="before"``, or
+      ``cut_end`` strictly before ``anchor_time``).
+    * ``1`` if after the dip and any high within ``label_horizon_minutes``
+      reaches the fee-aware ``sell_target`` (from ``entry_close`` when omitted).
+    * ``0`` if after the dip and the sell target is not reached in time.
 
     ``rise_pct`` is accepted only for backward-compatible callers and is
     ignored. Returns ``(label, max high in the label horizon)``.
     """
     del rise_pct  # unused; kept so older call sites still type-check at runtime
-    if entry_close is None or not math.isfinite(entry_close) or entry_close <= 0:
-        return 0, None
     work = _sorted_bars(bars)
-    end = _as_index_timestamp(cut_end, work.index)
-    through_cut = work.loc[work.index <= end]
-    if through_cut.empty or "low" not in work.columns:
-        return 0, None
-    trough_so_far = float(through_cut["low"].astype(float).min())
-    future = work.loc[work.index > end]
-    if future.empty:
-        return 0, None
+    end = _as_index_timestamp(cut_end, work.index) if not work.empty else pd.Timestamp(cut_end)
+
+    plunging = False
+    if side is not None:
+        plunging = str(side).lower() == "before"
+    elif anchor_time is not None and not work.empty:
+        anchor = _as_index_timestamp(anchor_time, work.index)
+        plunging = end < anchor
+    elif anchor_time is not None:
+        plunging = pd.Timestamp(cut_end) < pd.Timestamp(anchor_time)
 
     horizon = max(0, int(label_horizon_minutes))
-    horizon_end = end + pd.Timedelta(minutes=horizon)
-    window = future.loc[future.index <= horizon_end]
-    window_high = window["high"].astype(float) if not window.empty else pd.Series(dtype=float)
-    window_high = window_high[np.isfinite(window_high.to_numpy())]
-    max_high = float(window_high.max()) if not window_high.empty else None
+    max_high: float | None = None
+    if not work.empty and "high" in work.columns:
+        future = work.loc[work.index > end]
+        horizon_end = end + pd.Timedelta(minutes=horizon)
+        window = future.loc[future.index <= horizon_end]
+        window_high = window["high"].astype(float) if not window.empty else pd.Series(dtype=float)
+        window_high = window_high[np.isfinite(window_high.to_numpy())]
+        if not window_high.empty:
+            max_high = float(window_high.max())
 
+    if plunging:
+        return -1, max_high
+
+    if entry_close is None or not math.isfinite(entry_close) or entry_close <= 0:
+        return 0, max_high
     if sell_target is None:
         target = target_sell_price_for_entry(float(entry_close))
     else:
@@ -276,11 +369,6 @@ def label_cut(
         and max_high + 1e-9 >= target
     ):
         return 1, max_high
-
-    future_low = future["low"].astype(float)
-    future_low = future_low[np.isfinite(future_low.to_numpy())]
-    if not future_low.empty and float(future_low.min()) < trough_so_far - 1e-9:
-        return -1, max_high
     return 0, max_high
 
 
@@ -383,6 +471,8 @@ def assemble_cuts(
     min_horizon_minutes: int = DEFAULT_MIN_HORIZON_MINUTES,
     label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
     cut_vicinity_minutes: int = DEFAULT_CUT_VICINITY_MINUTES,
+    valley_window_minutes: int = DEFAULT_VALLEY_WINDOW_MINUTES,
+    valley_order_minutes: int = DEFAULT_VALLEY_ORDER_MINUTES,
     crossing_sessions: int = DEFAULT_CROSSING_SESSIONS,
     seed: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
@@ -391,9 +481,11 @@ def assemble_cuts(
     ``sessions`` items are ``(ticker, session_date, rth_bars, prior_close)``.
     One seeded generator is advanced in the given session order.
 
-    Cut ends are drawn within ``cut_vicinity_minutes`` of the dip anchor.
-    Positive labels require the fee-aware sell target within
-    ``label_horizon_minutes`` after the cut. Cut eligibility keeps at least
+    The dip is the most pronounced valley in the first
+    ``valley_window_minutes``. Cut ends are drawn within
+    ``cut_vicinity_minutes`` of that dip. Positive labels require the
+    fee-aware sell target within ``label_horizon_minutes`` after the cut.
+    Cut eligibility keeps at least
     ``max(min_horizon_minutes, label_horizon_minutes)`` bars after the cut.
 
     ``sell_crossings_5d`` counts upward close-to-close crosses (below → above)
@@ -413,7 +505,13 @@ def assemble_cuts(
     for ticker, session_day, bars, prior_close in sessions:
         key = ticker.upper()
         session_histories[key].append(bars)
-        anchor = find_dip_anchor(bars, prior_close, dip_pct)
+        anchor = find_dip_anchor(
+            bars,
+            prior_close,
+            dip_pct,
+            valley_window_minutes=valley_window_minutes,
+            valley_order_minutes=valley_order_minutes,
+        )
         if anchor is None:
             continue
         cuts = sample_cut_ends(
@@ -437,6 +535,8 @@ def assemble_cuts(
                 ordered,
                 cut_end,
                 entry_close,
+                side=side,
+                anchor_time=anchor.anchor_time,
                 sell_target=sell_price,
                 label_horizon_minutes=label_horizon_minutes,
             )

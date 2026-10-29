@@ -7,6 +7,9 @@ url = "postgresql://localhost:5432/tradingai_sim"
 [download]
 days = 60
 pace_seconds = 0.25
+# Packaged ~3000 US equities (Russell 3000 seed + Alpaca US filter); IBKR SMART/USD proxy.
+# Resolved under tradingai/data/universe/ when relative.
+universe_file = "us_equities_3000.txt"
 
 [strategy]
 dip_pct = 4.9
