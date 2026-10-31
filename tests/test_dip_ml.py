@@ -129,10 +129,9 @@ def test_encode_sequence_right_align_and_static():
         prior_close=100.0,
         sell_crossings_5d=3,
         cut_end=index[-1],
-        side="after",
     )
-    assert static.shape == (4,)
-    assert static[-1] == 1.0
+    assert static.shape == (3,)
+    assert abs(float(static[0]) - np.log(100.0)) < 1e-5
 
 
 def test_model_predict_proba_shape():
@@ -141,7 +140,7 @@ def test_model_predict_proba_shape():
     model = DipCutClassifier(hidden=16, blocks=2, kernel=3, dropout=0.0)
     seq = torch.randn(4, 5, 32)
     mask = torch.ones(4, 32)
-    static = torch.randn(4, 4)
+    static = torch.randn(4, 3)
     probs = model.predict_proba(seq, mask, static)
     assert probs.shape == (4, 3)
     assert torch.allclose(probs.sum(dim=-1), torch.ones(4), atol=1e-5)
@@ -162,7 +161,7 @@ def test_chronological_split_and_weights():
                     label=lab,
                     seq=np.zeros((5, 8), np.float32),
                     mask=np.ones(8, np.float32),
-                    static=np.zeros(4, np.float32),
+                    static=np.zeros(3, np.float32),
                 )
             )
             sid += 1

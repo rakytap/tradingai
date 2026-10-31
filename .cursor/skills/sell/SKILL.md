@@ -1,31 +1,30 @@
 ---
 name: sell
 description: >-
-  Submits an IBKR TWS TRAIL LIMIT sell (default: full open position, fee-aware
-  limit at TRADINGAI_OPEN_DIP_TARGET_RETURN on last buy, 0.05% trail) via
-  tradingai-ibkr sell_stock_trail or tradingai-sell CLI. Use when the user
-  invokes /sell or asks to trail-limit sell a ticker.
+  Submits an IBKR TWS LIMIT sell (default: full open position, fee-aware limit
+  at TRADINGAI_OPEN_DIP_TARGET_RETURN on last buy) via tradingai-ibkr
+  sell_stock_limit or tradingai-sell CLI. Use when the user invokes /sell or
+  asks to limit-sell a ticker. For TRAIL LIMIT use /sell-trail /
+  sell_stock_trail / tradingai-sell-trail.
 disable-model-invocation: true
 ---
 
-# /sell — IBKR TWS trail-limit sell
+# /sell — IBKR TWS limit sell
 
 ## Goal
 
-Submit a sell transaction, trail limit by default. The arguments should be the
-stock ticker, amount of stocks (by default all open positions), the limit price
-(by default TRADINGAI_OPEN_DIP_TARGET_RETURN profit upon the last buy price of
-the stock), and with the trailing amount set to 0.05% by default.
+Submit a sell transaction as a **LIMIT** order (not trailing). Arguments: stock
+ticker, share count (default all open), and limit price (default
+fee-aware `TRADINGAI_OPEN_DIP_TARGET_RETURN` on last buy / avg cost).
 
 ## Defaults
 
 | Input | Default |
 |-------|---------|
-| `order_type` | `TRAIL LIMIT` |
+| `order_type` | `LMT` |
 | `quantity` | full open long position |
 | `limit_price` | fee-aware sell at `target_return` on last buy / avg cost |
 | `target_return` | `TRADINGAI_OPEN_DIP_TARGET_RETURN` / ≈**0.3836%** net after fees |
-| `trail_percent` | **0.05** (IB percent points → **0.05%**) |
 | `dry_run` | **true** unless user explicitly asks to submit live |
 
 ## Steps
@@ -35,25 +34,26 @@ the stock), and with the trailing amount set to 0.05% by default.
    - `quantity` (optional → all open)
    - `limit_price` (optional → fee-aware target)
    - `target_return` (optional → env/default ≈0.3836%; fraction, e.g. `0.01` = 1%)
-   - `trail_percent` (optional → 0.05)
    - `dry_run` (optional → true)
 
-2. **Prefer MCP** `tradingai-ibkr` → `sell_stock_trail`. Or CLI:
+2. **Prefer MCP** `tradingai-ibkr` → `sell_stock_limit`. Or CLI:
 
 ```bash
-# Dry-run: full position, fee-aware target limit, 0.05% trail
+# Dry-run: full position, fee-aware target limit
 tradingai-sell COIN
 
 # Custom net profit % (fraction): 1% after fees
 tradingai-sell COIN --target-return 0.01
 
-# Explicit size / limit / trail (skips fee-aware target_return math)
-tradingai-sell COIN --qty 33 --price 170.65 --trail-percent 0.05
+# Explicit size / limit (skips fee-aware target_return math)
+tradingai-sell COIN --qty 33 --price 170.65
 
 # Live (needs TRADINGAI_IBKR_ALLOW_ORDERS=1)
 tradingai-sell COIN --submit
 tradingai-sell COIN --target-return 0.01 --submit --yes
 ```
+
+TRAIL LIMIT (separate): `/sell-trail` / `tradingai-sell-trail` / MCP `sell_stock_trail`.
 
 3. **Fail-fast** on `error`, `status == "rejected"`, or missing position when
    qty omitted.
@@ -66,11 +66,10 @@ tradingai-sell COIN --target-return 0.01 --submit --yes
 | Field | Source |
 |-------|--------|
 | Symbol | `symbol` |
-| Side / type | sell / TRAIL LIMIT |
+| Side / type | sell / LMT |
 | Qty | `quantity` |
-| Limit / stop ref | `limit_price` / `trail_stop_price` |
+| Limit @ | `limit_price` |
 | Target return | `sizing.target_return` (when fee-aware) |
-| Trail % | `trail_percent` |
 | Buy ref | `sizing.buy_price` + source |
 | Dry run | `dry_run` |
 | Status | `status` / `order_id` |

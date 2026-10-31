@@ -724,10 +724,20 @@ Requires TWS or IB Gateway with the socket API enabled. Uses `TRADINGAI_IBKR_HOS
 | Tool | Description |
 |------|-------------|
 | `get_last_trades` | Recent fills via `reqExecutions` (`limit`, `side` buy/sell/all, optional `symbol` / `account`) |
-| `buy_stock_budget` | **LIMIT** buy sized to a cash budget (default mid price, spend **95%** of `total_budget`, integer shares, default **1%** STP child); **dry-run by default** |
+| `buy_stock_budget` | **LIMIT** buy sized to a cash budget (default mid price, spend **100%** of `total_budget`, integer shares, default **1%** STP child); **dry-run by default** |
 | `buy_stock` | Buy SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
-| `sell_stock_trail` | **TRAIL LIMIT** sell (default: full position, fee-aware target limit, **0.05%** trail); **dry-run by default** |
+| `sell_stock_limit` | **LIMIT** sell (default: full position, fee-aware target limit); **dry-run by default** |
+| `sell_stock_trail` | One-shot **TRAIL LIMIT** sell (default: full position, fee-aware target limit, **0.05%** trail; no watcher); **dry-run by default** |
 | `sell_stock` | Sell SMART/USD equity (`MKT` or `LMT`); **dry-run by default** |
+| `autosell_watch_start` | Background job: poll fills every **15s**, TRAIL LIMIT sell unpaired buys (same args as `sell_stock_trail`); **dry-run unless `submit=true`** |
+| `autosell_watch_status` | Status for one autosell job, or list all jobs |
+| `autosell_watch_stop` | Stop a background autosell job by `job_id` |
+| `buy_trail_start` | Budget LIMIT buy at mid (**no STP**) + trail **0.6%** after fill; tighten **0.05%/0.03%/0.01%** at 1×/1.5×/2× fee-aware target (5s poll after first tighten); exit when flat |
+| `buy_trail_status` | Status for one buy-trail job, or list all |
+| `buy_trail_stop` | Stop a buy-trail watcher by `job_id` |
+| `sell_trail_start` | Stepped watcher (not one-shot): wait fee-aware **0.2%**, trail **0.05%**, tighten **0.03%/0.01%** at 1.5×/2× (poll **10s**); CLI `tradingai-sell-trail-watch` |
+| `sell_trail_status` | Status for one sell-trail-watch job, or list all |
+| `sell_trail_stop` | Stop a sell-trail-watch job by `job_id` |
 
 Example prompts:
 
@@ -747,9 +757,30 @@ tradingai-buy COIN --price 170 --budget 6000
 tradingai-buy AAPL                          # mid price, default budget
 tradingai-buy COIN --price 170 --budget 6000 --submit   # live (ALLOW_ORDERS=1)
 
-tradingai-sell COIN                         # TRAIL LIMIT, full position, fee-aware target, 0.05% trail
-tradingai-sell COIN --qty 33 --price 170.65 --trail-percent 0.05
+tradingai-sell COIN                         # LIMIT, full position, fee-aware target
+tradingai-sell COIN --qty 33 --price 170.65
 tradingai-sell COIN --submit                # live (ALLOW_ORDERS=1)
+tradingai-sell COIN --target-return 0.01 --submit --yes
+
+tradingai-sell-trail COIN                   # one-shot TRAIL LIMIT (0.05% trail)
+tradingai-sell-trail COIN --qty 33 --price 170.65 --trail-percent 0.1
+tradingai-sell-trail COIN --submit --yes
+
+# Background autosell: every 15s, trail-sell unpaired buys for the symbol
+tradingai-autosell COIN
+tradingai-autosell COIN --target-return 0.01 --submit --yes
+tradingai-autosell --status
+tradingai-autosell --stop COIN_20260101T120000Z
+
+# Buy + stepped trail (0.6% → 0.05%/0.03%/0.01% at 1×/1.5×/2× target)
+tradingai-buy-trail COIN --budget 6000
+tradingai-buy-trail COIN --budget 6000 --submit --yes
+tradingai-buy-trail --status
+
+# Stepped watcher on open long (not one-shot): 0.2% → 0.05% → 0.03%/0.01%
+tradingai-sell-trail-watch COIN
+tradingai-sell-trail-watch COIN --submit --yes
+tradingai-sell-trail-watch --status
 ```
 
 ---

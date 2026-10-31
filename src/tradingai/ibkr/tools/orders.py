@@ -17,6 +17,7 @@ from tradingai.providers.ibkr_tws import (
     DEFAULT_SELL_TRAIL_PERCENT,
     place_budget_limit_buy,
     place_equity_order,
+    place_limit_sell,
     place_trail_limit_sell,
 )
 
@@ -134,8 +135,8 @@ def buy_stock_budget_tool(
 ) -> dict:
     """Limit-buy integer shares sized to ``budget_fraction`` of ``total_budget``.
 
-    Defaults: LIMIT at current mid; spend 95% of total budget; 1% STP child;
-    dry-run. Pass ``stop_loss=0`` or ``None`` to skip the stop.
+    Defaults: LIMIT at current mid; spend 100% of total budget; no stop-loss;
+    dry-run. Pass ``stop_loss`` (e.g. ``0.01``) to attach a SELL STP child.
     """
     budget = (
         float(total_budget)
@@ -177,6 +178,62 @@ def buy_stock_budget_tool(
                 f"({get_ibkr_host()}:{get_ibkr_port()}). "
                 "Live orders need TRADINGAI_IBKR_ALLOW_ORDERS=1 and dry_run=false. "
                 "Mid price requires IB market data permissions."
+            ),
+            "disclaimer": (
+                "IBKR order helper. Real money risk if not on paper. "
+                "Not financial advice."
+            ),
+        }
+
+
+def sell_stock_limit_tool(
+    symbol: str,
+    quantity: float | None = None,
+    limit_price: float | None = None,
+    target_return: float | None = None,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    account: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """LIMIT sell; defaults to full position and fee-aware target limit.
+
+    ``target_return`` is a net-return fraction after fees (e.g. ``0.01`` = 1%).
+    Used only when ``limit_price`` is omitted. Default =
+    ``TRADINGAI_OPEN_DIP_TARGET_RETURN`` / ``DEFAULT_TARGET_RETURN``.
+    """
+    try:
+        return place_limit_sell(
+            symbol=symbol,
+            quantity=quantity,
+            limit_price=limit_price,
+            target_return=target_return,
+            tif=tif,
+            outside_rth=outside_rth,
+            account=account,
+            dry_run=dry_run,
+            allow_orders=get_ibkr_allow_orders(),
+            max_shares=get_ibkr_max_order_shares(),
+            client_id=get_ibkr_mcp_client_id(),
+        )
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "symbol": symbol,
+            "quantity": quantity,
+            "limit_price": limit_price,
+            "target_return": target_return,
+            "order_type": "LMT",
+            "side": "sell",
+            "dry_run": dry_run,
+            "submitted": False,
+            "host": get_ibkr_host(),
+            "port": get_ibkr_port(),
+            "allow_orders": get_ibkr_allow_orders(),
+            "hint": (
+                "Ensure TWS/IB Gateway is running with API enabled "
+                f"({get_ibkr_host()}:{get_ibkr_port()}). "
+                "Live orders need TRADINGAI_IBKR_ALLOW_ORDERS=1 and dry_run=false."
             ),
             "disclaimer": (
                 "IBKR order helper. Real money risk if not on paper. "

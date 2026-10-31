@@ -26,6 +26,31 @@ SessionMap = Mapping[SessionKey, pd.DataFrame]
 SessionLoader = Callable[[str, date], pd.DataFrame | None]
 
 
+def _stop_loss_price(row: pd.Series | Mapping) -> float | None:
+    """Stop level from sample column, else entry_close × (1 − env/default stop)."""
+    series = row if isinstance(row, pd.Series) else pd.Series(row)
+    raw = series.get("stop_loss_price")
+    if raw is not None and pd.notna(raw):
+        level = float(raw)
+        if level > 0.0 and np.isfinite(level):
+            return level
+    entry = series.get("entry_close")
+    if entry is None or not pd.notna(entry):
+        return None
+    entry_px = float(entry)
+    if entry_px <= 0.0 or not np.isfinite(entry_px):
+        return None
+    try:
+        from tradingai.intraday.config import get_label_stop_loss
+
+        frac = float(get_label_stop_loss())
+    except Exception:
+        frac = 0.006
+    if frac <= 0.0:
+        return None
+    return entry_px * (1.0 - frac)
+
+
 def _session_day(value) -> date:
     if isinstance(value, date) and not isinstance(value, pd.Timestamp):
         return value
@@ -163,7 +188,14 @@ def plot_dip_sample(
         ax.plot(times, closes, color="#2c3e50", lw=1.4, label="close (cut)")
         if len(times):
             cut_end = times.iloc[-1]
-            ax.scatter([cut_end], [closes.iloc[-1]], c=color, s=48, zorder=5, label="cut end")
+            ax.scatter(
+                [cut_end],
+                [closes.iloc[-1]],
+                c="#27ae60",
+                s=22,
+                zorder=5,
+                label="cut",
+            )
     else:
         times = session.index
         closes = session["close"]
@@ -198,29 +230,51 @@ def plot_dip_sample(
                 label="close (after cut)",
                 zorder=2,
             )
-        # Soft vertical divider so the cut boundary is obvious on a full day.
-        ax.axvline(cut_end, color=color, ls="--", lw=1.0, alpha=0.85, label="cut end")
         if cut_end in closes.index:
-            ax.scatter(
-                [cut_end],
-                [float(closes.loc[cut_end])],
-                c=color,
-                s=48,
-                zorder=5,
-            )
+            cut_y = float(closes.loc[cut_end])
+            cut_x = cut_end
         elif bool(pre.any()):
+            cut_y = float(closes[pre].iloc[-1])
+            cut_x = times[pre][-1]
+        else:
+            cut_x = cut_y = None
+        if cut_x is not None:
             ax.scatter(
-                [times[pre][-1]],
-                [float(closes[pre].iloc[-1])],
-                c=color,
-                s=48,
+                [cut_x],
+                [cut_y],
+                c="#27ae60",
+                s=22,
                 zorder=5,
+                label="cut",
             )
 
-    prior = float(row["prior_close"])
-    sell = float(row["target_sell_price"])
+    series = row if isinstance(row, pd.Series) else pd.Series(row)
+    prior = float(series["prior_close"])
+    sell = float(series["target_sell_price"])
     ax.axhline(prior, color="#2980b9", ls="--", lw=1.1, label=f"prior {prior:.2f}")
+    entry = series.get("entry_close")
+    if entry is not None and pd.notna(entry):
+        entry_px = float(entry)
+        if entry_px > 0.0 and np.isfinite(entry_px):
+            ax.axhline(
+                entry_px,
+                color="#16a085",
+                ls="-",
+                lw=1.0,
+                alpha=0.85,
+                label=f"cut px {entry_px:.2f}",
+            )
     ax.axhline(sell, color="#e67e22", ls=":", lw=1.3, label=f"sell tgt {sell:.2f}")
+
+    stop = _stop_loss_price(row)
+    if stop is not None:
+        ax.axhline(
+            stop,
+            color="#c0392b",
+            ls="-.",
+            lw=1.2,
+            label=f"stop {stop:.2f}",
+        )
 
     if "anchor_time" in row and pd.notna(row["anchor_time"]) and not session.empty:
         anchor = _align_cut_end(row["anchor_time"], session.index)

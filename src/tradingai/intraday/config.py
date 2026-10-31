@@ -4,6 +4,10 @@ import os
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 ET = ZoneInfo("America/New_York")
 RTH_OPEN_HOUR = 9
 RTH_OPEN_MINUTE = 30
@@ -39,6 +43,9 @@ DEFAULT_TARGET_RETURN = (1.0 / 365.0) * (7.0 / 5.0)
 DEFAULT_SELL_TRAIL: float | None = None
 # Extra cushion on profit-taker beyond target_return (fraction).
 DEFAULT_PROFIT_TAKER_BUFFER = 0.0002  # 0.02%
+# Dip-dataset labeling (tradingai-build-dip-dataset).
+DEFAULT_DIP_LABEL_STOP_LOSS = 0.006  # 0.6% below cut close → label 0
+DEFAULT_DIP_LABEL_HORIZON_MINUTES = 15
 
 
 @lru_cache
@@ -66,6 +73,24 @@ def get_sell_trail() -> float:
             return max(0.0, float(DEFAULT_SELL_TRAIL))
         return get_target_return() / 2.0
     return max(0.0, float(raw))
+
+
+@lru_cache
+def get_label_stop_loss() -> float:
+    """Stop fraction vs cut close for dip-dataset label=0 (default 0.6%)."""
+    raw = os.getenv("TRADINGAI_DIP_LABEL_STOP_LOSS")
+    if not raw:
+        return DEFAULT_DIP_LABEL_STOP_LOSS
+    return max(0.0, float(raw))
+
+
+@lru_cache
+def get_label_horizon_minutes() -> int:
+    """Minutes after cut used when labeling 0 vs 1 in the dip dataset."""
+    raw = os.getenv("TRADINGAI_DIP_LABEL_HORIZON_MINUTES")
+    if not raw:
+        return int(DEFAULT_DIP_LABEL_HORIZON_MINUTES)
+    return max(0, int(raw))
 
 
 @lru_cache
@@ -205,6 +230,8 @@ def clear_intraday_config_cache() -> None:
     get_bar_period.cache_clear()
     get_buy_notional_usd.cache_clear()
     get_target_return.cache_clear()
+    get_label_stop_loss.cache_clear()
+    get_label_horizon_minutes.cache_clear()
     get_sell_trail.cache_clear()
     get_profit_taker_buffer.cache_clear()
     get_ibkr_host.cache_clear()

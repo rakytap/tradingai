@@ -20,13 +20,19 @@ from tradingai.data.repositories.intraday_bars import (
 )
 from tradingai.intraday.bars import prior_daily_close, rth_open_for_day
 from tradingai.intraday.dip_charts import pick_stratified_samples, write_dip_dataset_viz
+from tradingai.intraday.config import (
+    clear_intraday_config_cache,
+    get_buy_notional_usd,
+    get_label_horizon_minutes,
+    get_label_stop_loss,
+    get_target_return,
+)
 from tradingai.intraday.dip_dataset import (
-    DEFAULT_CUTS_AFTER,
-    DEFAULT_CUTS_BEFORE,
-    DEFAULT_CUT_VICINITY_MINUTES,
+    DEFAULT_CUTS_PER_SESSION,
+    DEFAULT_CUT_MAX_MINUTES_FROM_OPEN,
+    DEFAULT_CUT_MIN_MINUTES_FROM_OPEN,
     DEFAULT_DATASET_DIP_PCT,
     DEFAULT_DATASET_RISE_PCT,
-    DEFAULT_LABEL_HORIZON_MINUTES,
     DEFAULT_MIN_HORIZON_MINUTES,
     DEFAULT_VALLEY_ORDER_MINUTES,
     DEFAULT_VALLEY_WINDOW_MINUTES,
@@ -96,18 +102,38 @@ def _normalize_source(source: str) -> str:
     raise ValueError(f"Unsupported source {source!r}; use history, sim, or alpaca.")
 
 
+def take_recent_sessions(
+    sessions: list[tuple[date, pd.DataFrame]],
+    days: int | None,
+) -> list[tuple[date, pd.DataFrame]]:
+    """Keep the most recent ``days`` RTH sessions (chronological order preserved).
+
+    ``days is None`` or ``days <= 0`` means keep all sessions.
+    """
+    if days is None or int(days) <= 0:
+        return list(sessions)
+    n = int(days)
+    if len(sessions) <= n:
+        return list(sessions)
+    return list(sessions[-n:])
+
+
 def build_dip_dataset(
     tickers: list[str] | None = None,
     *,
     source: str = SOURCE_HISTORY,
     database_url: str | None = None,
+    days: int | None = None,
     dip_pct: float = DEFAULT_DATASET_DIP_PCT,
     rise_pct: float = DEFAULT_DATASET_RISE_PCT,
-    cuts_before: int = DEFAULT_CUTS_BEFORE,
-    cuts_after: int = DEFAULT_CUTS_AFTER,
-    min_horizon_minutes: int = DEFAULT_MIN_HORIZON_MINUTES,
-    label_horizon_minutes: int = DEFAULT_LABEL_HORIZON_MINUTES,
-    cut_vicinity_minutes: int = DEFAULT_CUT_VICINITY_MINUTES,
+    n_cuts: int = DEFAULT_CUTS_PER_SESSION,
+    min_horizon_minutes: int | None = None,
+    label_horizon_minutes: int | None = None,
+    stop_loss: float | None = None,
+    target_return: float | None = None,
+    buy_notional_usd: float | None = None,
+    cut_min_minutes_from_open: int = DEFAULT_CUT_MIN_MINUTES_FROM_OPEN,
+    cut_max_minutes_from_open: int = DEFAULT_CUT_MAX_MINUTES_FROM_OPEN,
     valley_window_minutes: int = DEFAULT_VALLEY_WINDOW_MINUTES,
     valley_order_minutes: int = DEFAULT_VALLEY_ORDER_MINUTES,
     seed: int = 0,
@@ -145,7 +171,9 @@ def build_dip_dataset(
             else:
                 history = load_intraday_bars(ticker, table=INTRADAY_HISTORY_TABLE)
                 daily = list_closes(ticker)
-            ticker_sessions = split_rth_sessions(history)
+            ticker_sessions = take_recent_sessions(
+                split_rth_sessions(history), days
+            )
         except Exception as exc:
             errors.append(f"{ticker}: {exc}")
             log_error(index, len(universe), ticker, str(exc))
@@ -170,15 +198,39 @@ def build_dip_dataset(
         f"(this can take a few minutes)...",
         flush=True,
     )
+    resolved_horizon = int(
+        label_horizon_minutes
+        if label_horizon_minutes is not None
+        else get_label_horizon_minutes()
+    )
+    resolved_min_horizon = int(
+        min_horizon_minutes
+        if min_horizon_minutes is not None
+        else max(DEFAULT_MIN_HORIZON_MINUTES, resolved_horizon)
+    )
+    resolved_stop = float(
+        stop_loss if stop_loss is not None else get_label_stop_loss()
+    )
+    resolved_return = float(
+        target_return if target_return is not None else get_target_return()
+    )
+    resolved_notional = float(
+        buy_notional_usd
+        if buy_notional_usd is not None
+        else get_buy_notional_usd()
+    )
     samples, bars, qualifying = assemble_cuts(
         sessions,
         dip_pct=dip_pct,
         rise_pct=rise_pct,
-        cuts_before=cuts_before,
-        cuts_after=cuts_after,
-        min_horizon_minutes=min_horizon_minutes,
-        label_horizon_minutes=label_horizon_minutes,
-        cut_vicinity_minutes=cut_vicinity_minutes,
+        n_cuts=n_cuts,
+        min_horizon_minutes=resolved_min_horizon,
+        label_horizon_minutes=resolved_horizon,
+        stop_loss=resolved_stop,
+        target_return=resolved_return,
+        buy_notional_usd=resolved_notional,
+        cut_min_minutes_from_open=cut_min_minutes_from_open,
+        cut_max_minutes_from_open=cut_max_minutes_from_open,
         valley_window_minutes=valley_window_minutes,
         valley_order_minutes=valley_order_minutes,
         seed=seed,
@@ -223,6 +275,7 @@ def build_dip_dataset(
         "source": source_key,
         "database_url": db_url,
         "tickers": universe,
+        "days": None if days is None or int(days) <= 0 else int(days),
         "sessions_seen": sessions_seen,
         "sessions_with_prior_close": len(sessions),
         "sessions_qualifying": qualifying,
@@ -230,11 +283,16 @@ def build_dip_dataset(
         "skipped_no_prior_close": skipped_no_prior_close,
         "dip_pct": float(dip_pct),
         "rise_pct": float(rise_pct),
-        "cuts_before": int(cuts_before),
-        "cuts_after": int(cuts_after),
-        "min_horizon_minutes": int(min_horizon_minutes),
-        "label_horizon_minutes": int(label_horizon_minutes),
-        "cut_vicinity_minutes": int(cut_vicinity_minutes),
+        "n_cuts": int(n_cuts),
+        "min_horizon_minutes": (
+            None if min_horizon_minutes is None else int(min_horizon_minutes)
+        ),
+        "label_horizon_minutes": resolved_horizon,
+        "stop_loss": resolved_stop,
+        "target_return": resolved_return,
+        "buy_notional_usd": resolved_notional,
+        "cut_min_minutes_from_open": int(cut_min_minutes_from_open),
+        "cut_max_minutes_from_open": int(cut_max_minutes_from_open),
         "valley_window_minutes": int(valley_window_minutes),
         "valley_order_minutes": int(valley_order_minutes),
         "seed": int(seed),
@@ -267,6 +325,15 @@ def main() -> None:
         default=None,
         help="Override sim DB URL when --source is sim/alpaca.",
     )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help=(
+            "Use only the most recent N RTH sessions per ticker "
+            "(default: all available sessions in the bar store)."
+        ),
+    )
     parser.add_argument("--dip-pct", type=float, default=DEFAULT_DATASET_DIP_PCT)
     parser.add_argument(
         "--rise-pct",
@@ -274,33 +341,76 @@ def main() -> None:
         default=DEFAULT_DATASET_RISE_PCT,
         help="Legacy sample field; labeling uses the fee-aware sell target.",
     )
-    parser.add_argument("--cuts-before", type=int, default=DEFAULT_CUTS_BEFORE)
-    parser.add_argument("--cuts-after", type=int, default=DEFAULT_CUTS_AFTER)
+    parser.add_argument(
+        "--cuts",
+        type=int,
+        default=DEFAULT_CUTS_PER_SESSION,
+        help=(
+            "Random cuts per qualifying session inside the open-relative "
+            f"window (default {DEFAULT_CUTS_PER_SESSION})."
+        ),
+    )
     parser.add_argument(
         "--min-horizon-minutes",
         type=int,
-        default=DEFAULT_MIN_HORIZON_MINUTES,
+        default=None,
         help=(
             "Require at least this many post-cut bars when sampling cuts "
-            f"(default {DEFAULT_MIN_HORIZON_MINUTES}; raised to label horizon)."
+            "(default: max of hardcoded floor and label horizon / env)."
         ),
     )
     parser.add_argument(
         "--label-horizon-minutes",
         type=int,
-        default=DEFAULT_LABEL_HORIZON_MINUTES,
+        default=None,
         help=(
-            "Minutes after the cut in which hitting the sell target counts as "
-            f"label=1 (default {DEFAULT_LABEL_HORIZON_MINUTES})."
+            "Minutes after the cut for stop/target labeling "
+            "(default TRADINGAI_DIP_LABEL_HORIZON_MINUTES / 15)."
         ),
     )
     parser.add_argument(
-        "--cut-vicinity-minutes",
-        type=int,
-        default=DEFAULT_CUT_VICINITY_MINUTES,
+        "--stop-loss",
+        type=float,
+        default=None,
         help=(
-            "Only sample cut ends within this many minutes of the dip "
-            f"(default {DEFAULT_CUT_VICINITY_MINUTES}; 0 = whole session)."
+            "Fraction below cut close that forces label=0 "
+            "(default TRADINGAI_DIP_LABEL_STOP_LOSS / 0.006). Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--target-return",
+        type=float,
+        default=None,
+        help=(
+            "Net profit fraction for fee-aware sell target "
+            "(default TRADINGAI_OPEN_DIP_TARGET_RETURN)."
+        ),
+    )
+    parser.add_argument(
+        "--buy-notional",
+        type=float,
+        default=None,
+        help=(
+            "Notional USD for fee estimate when pricing the sell target "
+            "(default TRADINGAI_OPEN_DIP_BUY_NOTIONAL / 20000)."
+        ),
+    )
+    parser.add_argument(
+        "--cut-min-minutes-from-open",
+        type=int,
+        default=DEFAULT_CUT_MIN_MINUTES_FROM_OPEN,
+        help=(
+            "Earliest cut: minutes after session open "
+            f"(default {DEFAULT_CUT_MIN_MINUTES_FROM_OPEN} = 1.0h)."
+        ),
+    )
+    parser.add_argument(
+        "--cut-max-minutes-from-open",
+        type=int,
+        default=DEFAULT_CUT_MAX_MINUTES_FROM_OPEN,
+        help=(
+            "Latest cut: minutes after session open "
+            f"(default {DEFAULT_CUT_MAX_MINUTES_FROM_OPEN} = 2.5h)."
         ),
     )
     parser.add_argument(
@@ -338,18 +448,23 @@ def main() -> None:
         help="Stratified sample charts to write under out/viz (0 disables).",
     )
     args = parser.parse_args()
+    clear_intraday_config_cache()
     try:
         result = build_dip_dataset(
             args.tickers,
             source=args.source,
             database_url=args.database_url,
+            days=args.days,
             dip_pct=args.dip_pct,
             rise_pct=args.rise_pct,
-            cuts_before=args.cuts_before,
-            cuts_after=args.cuts_after,
+            n_cuts=args.cuts,
             min_horizon_minutes=args.min_horizon_minutes,
             label_horizon_minutes=args.label_horizon_minutes,
-            cut_vicinity_minutes=args.cut_vicinity_minutes,
+            stop_loss=args.stop_loss,
+            target_return=args.target_return,
+            buy_notional_usd=args.buy_notional,
+            cut_min_minutes_from_open=args.cut_min_minutes_from_open,
+            cut_max_minutes_from_open=args.cut_max_minutes_from_open,
             valley_window_minutes=args.valley_window_minutes,
             valley_order_minutes=args.valley_order_minutes,
             seed=args.seed,

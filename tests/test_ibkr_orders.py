@@ -74,9 +74,9 @@ def test_place_budget_limit_buy_dry_run_with_price():
     assert out["quantity"] == 190  # floor(19000/100)
     assert out["sizing"]["spend_budget"] == 19000.0
     assert out["sizing"]["notional"] == 19000.0
-    assert out["stop_loss"] == pytest.approx(0.01)
-    assert out["stop_price"] == pytest.approx(99.0)
-    assert out["sizing"]["stop_price"] == pytest.approx(99.0)
+    assert out["stop_loss"] is None
+    assert out["stop_price"] is None
+    assert out["sizing"]["stop_price"] is None
 
 
 def test_place_budget_limit_buy_no_stop_loss():
@@ -148,7 +148,9 @@ def test_place_budget_limit_buy_uses_mid_when_price_omitted(monkeypatch):
     assert out["quantity"] == 190  # floor(9500/50)
     assert out["quote"]["price_source"] == "mid"
     assert out["sizing"]["limit_price"] == 50.0
-    assert out["stop_price"] == pytest.approx(49.5)
+    assert out["stop_loss"] is None
+    assert out["stop_price"] is None
+    assert out["sizing"]["stop_price"] is None
 
 
 def test_round_us_equity_price():
@@ -158,6 +160,58 @@ def test_round_us_equity_price():
     assert ibkr_tws.round_us_equity_price(0.12346, mode="round") == 0.1235  # $0.0001 tick
     assert ibkr_tws.round_us_equity_offset(0.42173) == 0.42
     assert ibkr_tws.round_us_equity_offset(0.085325) == 0.09
+
+
+def test_place_limit_sell_dry_run_explicit():
+    out = ibkr_tws.place_limit_sell(
+        symbol="COIN",
+        quantity=33,
+        limit_price=170.65,
+        dry_run=True,
+    )
+    assert out["submitted"] is False
+    assert out["status"] == "dry_run"
+    assert out["order_type"] == "LMT"
+    assert out["side"] == "sell"
+    assert out["quantity"] == 33
+    assert out["limit_price"] == pytest.approx(170.65)
+    assert "trail_percent" not in out
+
+
+def test_place_limit_sell_defaults_qty_and_target(monkeypatch):
+    monkeypatch.setattr(
+        ibkr_tws,
+        "fetch_equity_position",
+        lambda symbol, **kwargs: {
+            "symbol": symbol.upper(),
+            "account": "DU123",
+            "quantity": 10.0,
+            "avg_cost": 100.0,
+            "sec_type": "STK",
+            "source": "ibkr_tws",
+        },
+    )
+    monkeypatch.setattr(
+        ibkr_tws,
+        "fetch_last_buy_price",
+        lambda symbol, **kwargs: {
+            "symbol": symbol.upper(),
+            "buy_price": 100.0,
+            "shares": 10.0,
+            "time": None,
+            "account": "DU123",
+            "source": "ibkr_tws_execution",
+        },
+    )
+    out = ibkr_tws.place_limit_sell(
+        symbol="aaa",
+        dry_run=True,
+        target_return=0.01,
+    )
+    assert out["order_type"] == "LMT"
+    assert out["quantity"] == 10.0
+    assert out["limit_price"] > 100.0
+    assert out["sizing"]["buy_price_source"] == "last_buy_fill"
 
 
 def test_place_trail_limit_sell_dry_run_explicit():

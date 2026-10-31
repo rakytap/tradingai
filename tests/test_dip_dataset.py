@@ -29,6 +29,7 @@ from tradingai.intraday.jobs.backfill_intraday_bars import (
 from tradingai.intraday.jobs.build_dip_dataset import (
     resolve_prior_close,
     resolve_sim_prior_close,
+    take_recent_sessions,
 )
 from tradingai.providers.ibkr_tws import format_ib_end_datetime
 
@@ -196,82 +197,89 @@ def test_find_dip_anchor_prefers_open_washout_by_right_bounce():
     assert anchor.anchor_low == 91.0
 
 
-def test_sample_cut_ends_avoids_anchor_and_horizon():
-    bars = _bars(lows=[100.0] * 40, closes=[100.0] * 40)
-    anchor = bars.index[20]
+def test_sample_cut_ends_in_session_window_and_reproducible():
+    # 180 minutes from 09:30 → window [10:30, 12:00] = indices 60..150
+    bars = _bars(lows=[100.0] * 180, closes=[100.0] * 180)
+    anchor = bars.index[90]  # 11:00
     horizon = 15
     first = sample_cut_ends(
         bars,
         anchor,
-        n_before=4,
-        n_after=10,
-        min_horizon_minutes=horizon,
-        rng=np.random.default_rng(0),
-        vicinity_minutes=45,
+        8,
+        horizon,
+        np.random.default_rng(0),
+        cut_min_minutes_from_open=60,
+        cut_max_minutes_from_open=150,
     )
     second = sample_cut_ends(
         bars,
         anchor,
-        n_before=4,
-        n_after=10,
-        min_horizon_minutes=horizon,
-        rng=np.random.default_rng(0),
-        vicinity_minutes=45,
+        8,
+        horizon,
+        np.random.default_rng(0),
+        cut_min_minutes_from_open=60,
+        cut_max_minutes_from_open=150,
     )
     assert first == second
-    before = [stamp for stamp, side in first if side == "before"]
-    after = [stamp for stamp, side in first if side == "after"]
-    assert len(before) == 4
-    assert len(after) == 4
+    assert len(first) == 8
+    open_ts = bars.index[0]
+    earliest = open_ts + pd.Timedelta(minutes=60)
+    latest = open_ts + pd.Timedelta(minutes=150)
     last_eligible = bars.index[len(bars) - horizon - 1]
-    for stamp, _side in first:
+    for stamp, side in first:
         assert stamp != anchor
+        assert earliest <= stamp <= latest
         assert stamp <= last_eligible
-        assert abs(stamp - anchor) <= pd.Timedelta(minutes=45)
-    assert all(stamp < anchor for stamp in before)
-    assert all(stamp > anchor for stamp in after)
+        assert side == ("before" if stamp < anchor else "after")
 
 
-def test_sample_cut_ends_takes_every_bar_when_the_side_is_short():
-    bars = _bars(lows=[100.0] * 30, closes=[100.0] * 30)
-    anchor = bars.index[5]
+def test_sample_cut_ends_takes_entire_pool_when_short():
+    bars = _bars(lows=[100.0] * 180, closes=[100.0] * 180)
+    anchor = bars.index[90]
+    # Narrow window with only a few eligible bars.
     chosen = sample_cut_ends(
         bars,
         anchor,
-        n_before=10,
-        n_after=10,
-        min_horizon_minutes=20,
-        rng=np.random.default_rng(1),
-        vicinity_minutes=45,
+        20,
+        5,
+        np.random.default_rng(1),
+        cut_min_minutes_from_open=60,
+        cut_max_minutes_from_open=65,
     )
-    before = [stamp for stamp, side in chosen if side == "before"]
-    after = [stamp for stamp, side in chosen if side == "after"]
-    assert before == list(bars.index[:5])
-    assert after == list(bars.index[6:10])
-    assert anchor not in before and anchor not in after
+    open_ts = bars.index[0]
+    pool = [
+        ts
+        for ts in bars.index[: 180 - 5]
+        if open_ts + pd.Timedelta(minutes=60)
+        <= ts
+        <= open_ts + pd.Timedelta(minutes=65)
+        and ts != anchor
+    ]
+    assert {ts for ts, _ in chosen} == set(pool)
 
 
-def test_sample_cut_ends_stays_within_vicinity_of_dip():
-    bars = _bars(lows=[100.0] * 120, closes=[100.0] * 120)
-    anchor = bars.index[60]
+def test_sample_cut_ends_excludes_early_and_late_session_bars():
+    bars = _bars(lows=[100.0] * 200, closes=[100.0] * 200)
+    anchor = bars.index[100]
     chosen = sample_cut_ends(
         bars,
         anchor,
-        n_before=20,
-        n_after=20,
-        min_horizon_minutes=5,
-        rng=np.random.default_rng(2),
-        vicinity_minutes=45,
+        40,
+        5,
+        np.random.default_rng(2),
+        cut_min_minutes_from_open=60,
+        cut_max_minutes_from_open=150,
     )
     assert chosen
-    window = pd.Timedelta(minutes=45)
+    open_ts = bars.index[0]
+    earliest = open_ts + pd.Timedelta(minutes=60)
+    latest = open_ts + pd.Timedelta(minutes=150)
     for stamp, side in chosen:
         assert stamp != anchor
-        assert abs(stamp - anchor) <= window
+        assert earliest <= stamp <= latest
         assert side == ("before" if stamp < anchor else "after")
-    # Far-from-dip bars are excluded even when the side is otherwise long.
-    assert all(stamp >= bars.index[15] for stamp, _ in chosen if stamp < anchor)
-    assert all(stamp <= bars.index[105] for stamp, _ in chosen if stamp > anchor)
+    assert all(stamp >= earliest for stamp, _ in chosen)
+    assert all(stamp <= latest for stamp, _ in chosen)
 
 
 def test_build_cut_starts_with_prior_close_and_stops_at_cut_end():
@@ -367,6 +375,101 @@ def test_label_cut_sell_target_after_horizon_is_zero():
     assert label == 0
 
 
+def test_label_cut_stop_first_then_target_is_zero():
+    """Stop hit before target within the horizon → label 0."""
+    closes = [100.0, 99.2, 101.0]
+    lows = [100.0, 99.2, 100.5]
+    highs = [100.0, 99.5, 101.0]
+    bars = _bars(lows, closes, highs=highs)
+    cut_end = bars.index[0]
+    entry = 100.0
+    sell = target_sell_price_for_entry(entry)
+    assert highs[1] < sell
+    assert highs[2] >= sell
+    assert lows[1] <= entry * (1.0 - 0.006)
+    label, max_high = label_cut(
+        bars,
+        cut_end,
+        entry_close=entry,
+        side="after",
+        sell_target=sell,
+        label_horizon_minutes=15,
+        stop_loss=0.006,
+    )
+    assert max_high == 101.0
+    assert label == 0
+
+
+def test_label_cut_target_first_then_stop_is_one():
+    """Target prints before any stop touch → label 1 (later stop ignored)."""
+    closes = [100.0, 101.0, 99.0]
+    lows = [100.0, 100.5, 99.0]
+    highs = [100.0, 101.0, 99.5]
+    bars = _bars(lows, closes, highs=highs)
+    cut_end = bars.index[0]
+    entry = 100.0
+    sell = target_sell_price_for_entry(entry)
+    assert highs[1] >= sell
+    assert lows[1] > entry * (1.0 - 0.006)
+    assert lows[2] <= entry * (1.0 - 0.006)
+    label, _ = label_cut(
+        bars,
+        cut_end,
+        entry_close=entry,
+        side="after",
+        sell_target=sell,
+        label_horizon_minutes=15,
+        stop_loss=0.006,
+    )
+    assert label == 1
+
+
+def test_label_cut_without_stop_hit_can_still_be_positive():
+    closes = [100.0, 99.5, 101.0]
+    lows = [100.0, 99.5, 100.5]
+    highs = [100.0, 99.7, 101.0]
+    bars = _bars(lows, closes, highs=highs)
+    cut_end = bars.index[0]
+    entry = 100.0
+    sell = target_sell_price_for_entry(entry)
+    assert lows[1] > entry * (1.0 - 0.006)
+    assert highs[2] >= sell
+    label, _ = label_cut(
+        bars,
+        cut_end,
+        entry_close=entry,
+        side="after",
+        sell_target=sell,
+        label_horizon_minutes=15,
+        stop_loss=0.006,
+    )
+    assert label == 1
+
+
+def test_label_defaults_read_from_env(monkeypatch):
+    from tradingai.intraday.config import clear_intraday_config_cache
+
+    monkeypatch.setenv("TRADINGAI_DIP_LABEL_STOP_LOSS", "0.01")
+    monkeypatch.setenv("TRADINGAI_DIP_LABEL_HORIZON_MINUTES", "12")
+    monkeypatch.setenv("TRADINGAI_OPEN_DIP_TARGET_RETURN", "0.01")
+    monkeypatch.setenv("TRADINGAI_OPEN_DIP_BUY_NOTIONAL", "10000")
+    clear_intraday_config_cache()
+    from tradingai.intraday.config import (
+        get_buy_notional_usd,
+        get_label_horizon_minutes,
+        get_label_stop_loss,
+        get_target_return,
+    )
+
+    assert get_label_stop_loss() == 0.01
+    assert get_label_horizon_minutes() == 12
+    assert get_target_return() == 0.01
+    assert get_buy_notional_usd() == 10000.0
+    sell = target_sell_price_for_entry(100.0)
+    assert sell > 100.0
+    clear_intraday_config_cache()
+
+
 def test_count_level_crossings_close_to_close():
     bars = _bars(
         lows=[100.0, 101.0, 99.0, 101.5, 98.0],
@@ -381,6 +484,18 @@ def test_target_sell_price_above_entry():
     entry = 100.0
     sell_at = target_sell_price_for_entry(entry)
     assert sell_at > entry
+
+
+def test_take_recent_sessions_keeps_last_n():
+    frames = [
+        (date(2026, 10, d), pd.DataFrame({"close": [float(d)]}))
+        for d in range(10, 16)
+    ]
+    assert take_recent_sessions(frames, None) == frames
+    assert take_recent_sessions(frames, 0) == frames
+    kept = take_recent_sessions(frames, 2)
+    assert [day for day, _ in kept] == [date(2026, 10, 14), date(2026, 10, 15)]
+    assert take_recent_sessions(frames, 100) == frames
 
 
 def test_assemble_cuts_records_sell_crossings():
@@ -400,8 +515,9 @@ def test_assemble_cuts_records_sell_crossings():
         ],
         dip_pct=4.0,
         rise_pct=0.4,
-        cuts_before=1,
-        cuts_after=1,
+        n_cuts=2,
+        cut_min_minutes_from_open=0,
+        cut_max_minutes_from_open=0,
         min_horizon_minutes=5,
         label_horizon_minutes=5,
         crossing_sessions=5,
@@ -410,7 +526,9 @@ def test_assemble_cuts_records_sell_crossings():
     assert qualifying == 1  # only day1 hits the dip
     assert "sell_crossings_5d" in samples.columns
     assert "target_sell_price" in samples.columns
+    assert "stop_loss_price" in samples.columns
     assert (samples["target_sell_price"] > samples["entry_close"]).all()
+    assert (samples["stop_loss_price"] < samples["entry_close"]).all()
     assert (samples["sell_crossings_5d"] >= 0).all()
     # Window helper truncates the current session at cut_end.
     cut_end = samples.iloc[0]["cut_end"]
@@ -427,16 +545,16 @@ def test_assemble_cuts_labels_match_future_high_and_keep_the_prefix():
         [("abc", date(2026, 10, 14), bars, 100.0)],
         dip_pct=4.0,
         rise_pct=0.4,
-        cuts_before=3,
-        cuts_after=3,
+        n_cuts=6,
+        cut_min_minutes_from_open=0,
+        cut_max_minutes_from_open=0,
         min_horizon_minutes=5,
         label_horizon_minutes=5,
         seed=2,
     )
     assert qualifying == 1
+    assert len(samples) == 6
     assert set(samples["side"]) == {"before", "after"}
-    assert (samples["side"] == "before").sum() == 3
-    assert (samples["side"] == "after").sum() == 3
     assert samples["ticker"].tolist() == ["ABC"] * 6
     for row in samples.itertuples(index=False):
         expected, _high = label_cut(
@@ -466,8 +584,9 @@ def test_write_dip_dataset_roundtrip(tmp_path):
     bars = _recovery_session()
     samples, cut_bars, _qualifying = assemble_cuts(
         [("AAA", date(2026, 10, 14), bars, 100.0)],
-        cuts_before=1,
-        cuts_after=1,
+        n_cuts=2,
+        cut_min_minutes_from_open=0,
+        cut_max_minutes_from_open=0,
         min_horizon_minutes=5,
         label_horizon_minutes=5,
         seed=0,
@@ -612,8 +731,9 @@ def test_write_dip_dataset_viz_plots_full_session(tmp_path):
     session = _recovery_session()
     samples, cut_bars, _ = assemble_cuts(
         [("AAA", date(2026, 10, 14), session, 100.0)],
-        cuts_before=1,
-        cuts_after=1,
+        n_cuts=2,
+        cut_min_minutes_from_open=0,
+        cut_max_minutes_from_open=0,
         min_horizon_minutes=5,
         label_horizon_minutes=5,
         seed=0,
@@ -641,6 +761,15 @@ def test_write_dip_dataset_viz_plots_full_session(tmp_path):
     plot_dip_sample(ax, row, session_bars=session, cut_bars=cut)
     # Pre-cut (dark) and post-cut (grey) close lines both present.
     assert len(ax.get_lines()) >= 2
+    legend_text = " ".join(
+        str(t.get_text()) for t in (ax.get_legend().get_texts() if ax.get_legend() else [])
+    )
+    assert "stop" in legend_text.lower()
+    assert "cut px" in legend_text.lower()
+    # Cut time is a green point; no vertical divider labeled cut end.
+    assert not any(
+        (line.get_label() or "").lower() == "cut end" for line in ax.get_lines()
+    )
     span = ax.get_xlim()[1] - ax.get_xlim()[0]
     session_span = (
         session.index[-1].to_pydatetime().timestamp()

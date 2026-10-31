@@ -26,6 +26,29 @@ DISCLAIMER = (
 )
 
 
+def _attach_dip_model_prob(row: dict, *, bars, dip) -> None:
+    """Add P(recover / profit target) from the Alpaca-trained dip checkpoint."""
+    try:
+        from tradingai.intraday.ml.infer import get_dip_predictor
+
+        prior = dip.prior_close
+        if prior is None or float(prior) <= 0:
+            return
+        pred = get_dip_predictor().predict_session(
+            bars,
+            prior_close=float(prior),
+            trough_time=getattr(dip, "trough_time", None),
+        )
+        if pred is None:
+            return
+        row["recover_prob"] = pred.recover_prob
+        row["dip_model_probs"] = pred.probs
+        row["dip_model_side"] = pred.side
+        row["dip_model_checkpoint"] = pred.checkpoint
+    except Exception as exc:
+        row["dip_model_error"] = str(exc)
+
+
 def _row_payload(
     dip,
     bounce,
@@ -34,6 +57,7 @@ def _row_payload(
     target_return: float,
     sell_trail: float,
     profit_taker_buffer: float,
+    bars=None,
 ) -> dict:
     row = {
         "ticker": dip.ticker,
@@ -63,6 +87,8 @@ def _row_payload(
             profit_taker_buffer=profit_taker_buffer,
             sell_trail=sell_trail,
         )
+    if bars is not None:
+        _attach_dip_model_prob(row, bars=bars, dip=dip)
     return row
 
 
@@ -119,6 +145,7 @@ def evaluate_ticker(
         target_return=ret,
         sell_trail=trail,
         profit_taker_buffer=buffer,
+        bars=bars,
     )
 
 

@@ -8,20 +8,17 @@ import sys
 
 from tradingai.ibkr.tools.orders import buy_stock_budget_tool
 from tradingai.intraday.config import get_buy_notional_usd
-from tradingai.providers.ibkr_tws import (
-    DEFAULT_BUDGET_FRACTION,
-    DEFAULT_BUY_STOP_LOSS,
-)
+from tradingai.providers.ibkr_tws import DEFAULT_BUDGET_FRACTION
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Place a LIMIT buy via IBKR TWS sized to a cash budget. "
-            "Spends budget_fraction (default 0.95) of total_budget on "
+            "Spends budget_fraction (default 1.0) of total_budget on "
             "floor(spend / limit_price) whole shares. "
-            "Default limit_price is current mid. Attaches a SELL STP at "
-            f"{DEFAULT_BUY_STOP_LOSS:.0%} under the limit unless --no-stop-loss. "
+            "Default limit_price is current mid. No stop-loss by default; "
+            "pass --stop-loss 0.01 for a 1% SELL STP child. "
             "Dry-run unless --submit."
         )
     )
@@ -54,17 +51,16 @@ def main() -> None:
     parser.add_argument(
         "--stop-loss",
         type=float,
-        default=DEFAULT_BUY_STOP_LOSS,
+        default=None,
         help=(
-            f"Stop-loss fraction under the buy limit "
-            f"(default {DEFAULT_BUY_STOP_LOSS} = {DEFAULT_BUY_STOP_LOSS:.0%}). "
-            "Use 0 with --no-stop-loss to disable."
+            "Optional stop-loss fraction under the buy limit "
+            "(e.g. 0.01 = 1% SELL STP child). Default: no stop."
         ),
     )
     parser.add_argument(
         "--no-stop-loss",
         action="store_true",
-        help="Do not attach a SELL STP child order.",
+        help="Explicitly skip a SELL STP child (default behavior).",
     )
     parser.add_argument(
         "--tif",
@@ -95,7 +91,10 @@ def main() -> None:
         help="Skip interactive confirm when using --submit.",
     )
     args = parser.parse_args()
-    stop_loss = None if args.no_stop_loss else float(args.stop_loss)
+    if args.no_stop_loss or args.stop_loss is None:
+        stop_loss = None
+    else:
+        stop_loss = float(args.stop_loss)
 
     dry_run = not args.submit
     if args.submit and not args.yes:

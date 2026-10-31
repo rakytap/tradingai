@@ -23,12 +23,24 @@ from tradingai.intraday.config import (
     get_ibkr_port,
 )
 
-# Fraction of total_budget spent on a budget limit buy (leave cash buffer).
-DEFAULT_BUDGET_FRACTION = 0.95
-# Attached SELL stop under the buy limit (fraction; 0.01 = 1%).
-DEFAULT_BUY_STOP_LOSS = 0.01
+# Fraction of total_budget spent on a budget limit buy (1.0 = full budget).
+DEFAULT_BUDGET_FRACTION = 1.0
+# Attached SELL stop under the buy limit (fraction; 0.01 = 1%). None = no stop.
+DEFAULT_BUY_STOP_LOSS: float | None = None
 # IB ``trailingPercent`` units are percent points (0.05 == 0.05%).
 DEFAULT_SELL_TRAIL_PERCENT = 0.05
+# sell-trail: wait until fee-aware net return reaches this, then place trail.
+DEFAULT_SELL_TRAIL_ACTIVATE_RETURN = 0.002  # 0.2%
+# sell-trail stepped tighten (IB percent points) at 1.5× / 2× activation profit.
+DEFAULT_SELL_TRAIL_1_5X_PERCENT = 0.03
+DEFAULT_SELL_TRAIL_2X_PERCENT = 0.01
+# Protective trail after budget buy (buy-trail); IB percent points.
+DEFAULT_BUY_TRAIL_PERCENT = 0.6
+# Tightened trail once fee-aware 1× target mid is reached (IB percent points).
+DEFAULT_BUY_TRAIL_TIGHT_PERCENT = 0.05
+# Further tighten at 1.5× / 2× fee-aware target return (IB percent points).
+DEFAULT_BUY_TRAIL_1_5X_PERCENT = 0.03
+DEFAULT_BUY_TRAIL_2X_PERCENT = 0.01
 
 _PERIOD_RE = re.compile(r"^(\d+)\s*([a-zA-Z]+)$")
 
@@ -355,6 +367,74 @@ def fetch_recent_trades(
     }
 
 
+def fetch_order_snapshot(
+    order_id: int,
+    *,
+    symbol: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict:
+    """Look up an order by id among open trades and recent fills.
+
+    Returns fill progress plus whether the order is still working.
+    """
+    oid = int(order_id)
+    ticker = symbol.upper().strip() if symbol else None
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=True,
+    ) as ib:
+        ib.reqOpenOrders()
+        ib.sleep(0.35)
+        open_match = None
+        for trade in ib.openTrades() or []:
+            order = trade.order
+            if order is None or int(getattr(order, "orderId", -1)) != oid:
+                continue
+            contract = trade.contract
+            sym = getattr(contract, "symbol", None)
+            if ticker and sym and str(sym).upper() != ticker:
+                continue
+            status = trade.orderStatus
+            open_match = {
+                "order_id": oid,
+                "symbol": sym,
+                "action": getattr(order, "action", None),
+                "order_type": getattr(order, "orderType", None),
+                "total_quantity": float(getattr(order, "totalQuantity", 0) or 0),
+                "status": status.status if status else None,
+                "filled": float(status.filled) if status else 0.0,
+                "remaining": float(status.remaining) if status else None,
+                "avg_fill_price": (
+                    float(status.avgFillPrice) if status and status.avgFillPrice else None
+                ),
+                "open": True,
+            }
+            break
+
+        fills = []
+        for fill in ib.fills() or []:
+            execution = fill.execution
+            if execution is None or int(getattr(execution, "orderId", -1)) != oid:
+                continue
+            fills.append(serialize_fill(fill))
+
+    filled_shares = sum(float(f.get("shares") or 0.0) for f in fills)
+    return {
+        "order_id": oid,
+        "symbol": ticker or (open_match or {}).get("symbol"),
+        "open": open_match is not None,
+        "open_order": open_match,
+        "fills": fills,
+        "filled_shares": filled_shares,
+        "buy_complete": open_match is None and filled_shares > 0,
+        "source": "ibkr_tws",
+    }
+
+
 def _normalize_order_action(side: str) -> str:
     canonical = normalize_trade_side(side)
     if canonical == "buy":
@@ -546,6 +626,25 @@ def round_us_equity_offset(offset: float) -> float:
     return max(0.01, round(off, 2))
 
 
+def _quote_from_ticker(tick) -> tuple[float | None, str, dict]:
+    """Pick mid → bid/ask mid → last → close from an ib_insync Ticker."""
+    mid = _finite_positive(tick.midpoint() if hasattr(tick, "midpoint") else None)
+    bid = _finite_positive(getattr(tick, "bid", None))
+    ask = _finite_positive(getattr(tick, "ask", None))
+    last = _finite_positive(getattr(tick, "last", None))
+    close = _finite_positive(getattr(tick, "close", None))
+    fields = {"bid": bid, "ask": ask, "last": last, "close": close}
+    if mid is not None:
+        return mid, "mid", fields
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0, "bid_ask_mid", fields
+    if last is not None:
+        return last, "last", fields
+    if close is not None:
+        return close, "close", fields
+    return None, "none", fields
+
+
 def fetch_equity_mid_price(
     symbol: str,
     *,
@@ -554,10 +653,18 @@ def fetch_equity_mid_price(
     port: int | None = None,
     client_id: int | None = None,
 ) -> dict:
-    """Fetch current mid (or bid/ask midpoint / last) for a SMART/USD equity."""
+    """Fetch current mid (or bid/ask midpoint / last) for a SMART/USD equity.
+
+    Tries live market data first; on empty quotes (common IB Error 10089 when
+    TOP/ALL is not subscribed for API), falls back to **delayed** data
+    (``reqMarketDataType(3)``).
+    """
     ticker = symbol.upper().strip()
     if not ticker:
         raise ValueError("symbol is required.")
+
+    # 1=live, 3=delayed (IB: "Delayed market data is available" on Error 10089).
+    md_attempts: tuple[tuple[int, str], ...] = ((1, "live"), (3, "delayed"))
 
     with connect_ib(
         host=host,
@@ -566,45 +673,42 @@ def fetch_equity_mid_price(
         readonly=True,
     ) as ib:
         contract = qualify_equity(ib, ticker)
-        tick = ib.reqMktData(contract, "", False, False)
-        try:
-            if wait_seconds > 0:
-                ib.sleep(wait_seconds)
-            mid = _finite_positive(tick.midpoint() if hasattr(tick, "midpoint") else None)
-            bid = _finite_positive(getattr(tick, "bid", None))
-            ask = _finite_positive(getattr(tick, "ask", None))
-            last = _finite_positive(getattr(tick, "last", None))
-            close = _finite_positive(getattr(tick, "close", None))
-            source = "mid"
-            price = mid
-            if price is None and bid is not None and ask is not None:
-                price = (bid + ask) / 2.0
-                source = "bid_ask_mid"
-            if price is None:
-                price = last
-                source = "last"
-            if price is None:
-                price = close
-                source = "close"
-            if price is None:
-                raise ValueError(
-                    f"No usable quote for {ticker} (mid/bid/ask/last/close empty)."
-                )
-            return {
-                "symbol": ticker,
-                "mid_price": round(float(price), 6),
-                "price_source": source,
-                "bid": bid,
-                "ask": ask,
-                "last": last,
-                "close": close,
-                "source": "ibkr_tws",
-            }
-        finally:
+        last_fields: dict = {"bid": None, "ask": None, "last": None, "close": None}
+        for md_type, md_label in md_attempts:
             try:
-                ib.cancelMktData(contract)
+                ib.reqMarketDataType(md_type)
             except Exception:
                 pass
+            tick = ib.reqMktData(contract, "", False, False)
+            try:
+                if wait_seconds > 0:
+                    ib.sleep(wait_seconds)
+                price, source, fields = _quote_from_ticker(tick)
+                last_fields = fields
+                if price is not None:
+                    return {
+                        "symbol": ticker,
+                        "mid_price": round(float(price), 6),
+                        "price_source": source,
+                        "market_data_type": md_label,
+                        "bid": fields["bid"],
+                        "ask": fields["ask"],
+                        "last": fields["last"],
+                        "close": fields["close"],
+                        "source": "ibkr_tws",
+                    }
+            finally:
+                try:
+                    ib.cancelMktData(contract)
+                except Exception:
+                    pass
+        raise ValueError(
+            f"No usable quote for {ticker} (mid/bid/ask/last/close empty; "
+            f"tried live+delayed). Last fields={last_fields}. "
+            "IB Error 10089 means live TOP is not subscribed for API — "
+            "delayed should work if Market Data Farm is connected; "
+            "or pass an explicit --price / limit."
+        )
 
 
 def integer_shares_for_budget(budget_usd: float, price: float) -> int:
@@ -639,9 +743,9 @@ def place_budget_limit_buy(
 
     Uses ``floor((total_budget * budget_fraction) / limit_price)`` shares.
     When ``limit_price`` is omitted, fetches the current mid from TWS.
-    When ``stop_loss`` is set (default 1%), attaches a child SELL STP at
-    ``limit_price * (1 - stop_loss)``. Pass ``stop_loss=None`` or ``0`` to
-    skip the stop.
+    When ``stop_loss`` is set (e.g. ``0.01`` = 1%), attaches a child SELL STP
+    at ``limit_price * (1 - stop_loss)``. Default is no stop
+    (``stop_loss=None`` or ``0``).
     """
     ticker = symbol.upper().strip()
     if not ticker:
@@ -732,7 +836,13 @@ def place_budget_limit_buy(
             port=port,
             client_id=client_id,
         )
-        return {**order, "sizing": sizing, "quote": quote}
+        return {
+            **order,
+            "stop_loss": None,
+            "stop_price": None,
+            "sizing": sizing,
+            "quote": quote,
+        }
 
     tif_norm = (tif or "DAY").strip().upper()
     preview = {
@@ -929,82 +1039,67 @@ def fetch_last_buy_price(
     }
 
 
-def place_trail_limit_sell(
+def resolve_sell_limit_sizing(
     *,
     symbol: str,
     quantity: float | None = None,
     limit_price: float | None = None,
-    trail_percent: float = DEFAULT_SELL_TRAIL_PERCENT,
-    tif: str = "DAY",
-    outside_rth: bool = False,
+    target_return: float | None = None,
     account: str | None = None,
     dry_run: bool = True,
-    allow_orders: bool = False,
     max_shares: float = 1_000.0,
-    wait_seconds: float = 2.0,
     host: str | None = None,
     port: int | None = None,
     client_id: int | None = None,
-    target_return: float | None = None,
+    order_type: str = "LMT",
 ) -> dict:
-    """Sell with an IBKR TRAIL LIMIT order.
+    """Resolve qty + limit for a sell (full position / fee-aware target defaults).
 
-    Defaults:
-    - quantity = full long position for the symbol
-    - limit_price = fee-aware sell target at ``target_return`` on last buy /
-      position avg cost (``TRADINGAI_OPEN_DIP_TARGET_RETURN`` / DEFAULT)
-    - trail_percent = 0.05 (IB percent points → 0.05%)
+    Returns a sizing dict. On missing long position when qty is omitted,
+    returns ``status=rejected`` with an ``error`` (no exception).
     """
-    from ib_insync import Order, Stock
-
     from tradingai.intraday.config import get_target_return
     from tradingai.intraday.profit_target import fee_aware_sell_price
 
     ticker = symbol.upper().strip()
     if not ticker:
         raise ValueError("symbol is required.")
-    trail = float(trail_percent)
-    if trail <= 0.0:
-        raise ValueError("trail_percent must be positive.")
 
     position = None
     buy_info = None
     buy_price = None
 
-    need_ib_meta = quantity is None or limit_price is None
-    if need_ib_meta or not dry_run:
-        # Position / last buy look-ups need TWS even for dry-run defaults.
-        if quantity is None or limit_price is None:
-            try:
-                position = fetch_equity_position(
-                    ticker,
-                    account=account,
-                    host=host,
-                    port=port,
-                    client_id=client_id,
-                )
-            except Exception as exc:
-                if quantity is None:
-                    raise ValueError(
-                        f"Could not load open position for {ticker}: {exc}"
-                    ) from exc
-            try:
-                buy_info = fetch_last_buy_price(
-                    ticker,
-                    account=account,
-                    host=host,
-                    port=port,
-                    client_id=client_id,
-                )
-            except Exception:
-                buy_info = None
+    if quantity is None or limit_price is None:
+        try:
+            position = fetch_equity_position(
+                ticker,
+                account=account,
+                host=host,
+                port=port,
+                client_id=client_id,
+            )
+        except Exception as exc:
+            if quantity is None:
+                raise ValueError(
+                    f"Could not load open position for {ticker}: {exc}"
+                ) from exc
+        try:
+            buy_info = fetch_last_buy_price(
+                ticker,
+                account=account,
+                host=host,
+                port=port,
+                client_id=client_id,
+            )
+        except Exception:
+            buy_info = None
 
     if quantity is None:
         if position is None or float(position["quantity"]) <= 0:
             return {
                 "symbol": ticker,
                 "side": "sell",
-                "order_type": "TRAIL LIMIT",
+                "order_type": order_type,
                 "submitted": False,
                 "status": "rejected",
                 "error": f"No open long position found for {ticker}.",
@@ -1054,33 +1149,174 @@ def place_trail_limit_sell(
             buy_notional_usd=notional,
             net_return=ret,
         )
-        # Ceil to next valid tick so we do not undershoot the fee-aware target.
         price = round_us_equity_price(
             float(target_meta["sell_price"]), mode="ceil"
         )
     else:
-        # Explicit limit must still be on a valid IB tick.
         price = round_us_equity_price(float(price), mode="round")
 
-    # Dollar offset between stop and limit when the trail fires.
-    lmt_offset = round_us_equity_offset(
-        max(0.01, float(price) * (trail / 100.0))
-    )
-
-    sizing = {
+    return {
         "symbol": ticker,
         "quantity": qty,
         "limit_price": price,
-        "trail_percent": trail,
-        "lmt_price_offset": lmt_offset,
-        "trail_stop_price": price,
         "buy_price": round(float(buy_price), 6) if buy_price else None,
         "buy_price_source": buy_source,
         "target_return": ret,
         "target_meta": target_meta,
         "position": position,
-        "order_type": "TRAIL LIMIT",
+        "account": account or (position.get("account") if position else None),
+        "order_type": order_type,
         "side": "sell",
+        "dry_run": bool(dry_run),
+        "source": "ibkr_tws",
+        "disclaimer": (
+            "IBKR order helper. Real money risk if not on paper. "
+            "Not financial advice."
+        ),
+    }
+
+
+def place_limit_sell(
+    *,
+    symbol: str,
+    quantity: float | None = None,
+    limit_price: float | None = None,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    account: str | None = None,
+    dry_run: bool = True,
+    allow_orders: bool = False,
+    max_shares: float = 1_000.0,
+    wait_seconds: float = 2.0,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    target_return: float | None = None,
+) -> dict:
+    """Sell with a plain IBKR LIMIT order.
+
+    Defaults:
+    - quantity = full long position for the symbol
+    - limit_price = fee-aware sell target at ``target_return`` on last buy /
+      position avg cost (``TRADINGAI_OPEN_DIP_TARGET_RETURN`` / DEFAULT)
+    """
+    sizing = resolve_sell_limit_sizing(
+        symbol=symbol,
+        quantity=quantity,
+        limit_price=limit_price,
+        target_return=target_return,
+        account=account,
+        dry_run=dry_run,
+        max_shares=max_shares,
+        host=host,
+        port=port,
+        client_id=client_id,
+        order_type="LMT",
+    )
+    if sizing.get("status") == "rejected":
+        return sizing
+
+    qty = float(sizing["quantity"])
+    price = float(sizing["limit_price"])
+    preview = {
+        "symbol": sizing["symbol"],
+        "side": "sell",
+        "quantity": qty,
+        "order_type": "LMT",
+        "limit_price": price,
+        "tif": (tif or "DAY").strip().upper(),
+        "outside_rth": bool(outside_rth),
+        "account": sizing.get("account"),
+        "exchange": "SMART",
+        "currency": "USD",
+        "dry_run": bool(dry_run),
+        "sizing": sizing,
+        "source": "ibkr_tws",
+        "disclaimer": sizing["disclaimer"],
+        "target_return": sizing.get("target_return"),
+    }
+
+    order = place_equity_order(
+        symbol=sizing["symbol"],
+        side="sell",
+        quantity=qty,
+        order_type="LMT",
+        limit_price=price,
+        tif=tif,
+        outside_rth=outside_rth,
+        account=sizing.get("account"),
+        dry_run=dry_run,
+        allow_orders=allow_orders,
+        max_shares=max_shares,
+        wait_seconds=wait_seconds,
+        host=host,
+        port=port,
+        client_id=client_id,
+    )
+    return {**preview, **order, "sizing": sizing, "order_type": "LMT"}
+
+
+def place_trail_limit_sell(
+    *,
+    symbol: str,
+    quantity: float | None = None,
+    limit_price: float | None = None,
+    trail_percent: float = DEFAULT_SELL_TRAIL_PERCENT,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    account: str | None = None,
+    dry_run: bool = True,
+    allow_orders: bool = False,
+    max_shares: float = 1_000.0,
+    wait_seconds: float = 2.0,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    target_return: float | None = None,
+) -> dict:
+    """Sell with an IBKR TRAIL LIMIT order.
+
+    Defaults:
+    - quantity = full long position for the symbol
+    - limit_price = fee-aware sell target at ``target_return`` on last buy /
+      position avg cost (``TRADINGAI_OPEN_DIP_TARGET_RETURN`` / DEFAULT)
+    - trail_percent = 0.05 (IB percent points → 0.05%)
+    """
+    from ib_insync import Order, Stock
+
+    trail = float(trail_percent)
+    if trail <= 0.0:
+        raise ValueError("trail_percent must be positive.")
+
+    sizing = resolve_sell_limit_sizing(
+        symbol=symbol,
+        quantity=quantity,
+        limit_price=limit_price,
+        target_return=target_return,
+        account=account,
+        dry_run=dry_run,
+        max_shares=max_shares,
+        host=host,
+        port=port,
+        client_id=client_id,
+        order_type="TRAIL LIMIT",
+    )
+    if sizing.get("status") == "rejected":
+        return sizing
+
+    ticker = sizing["symbol"]
+    qty = float(sizing["quantity"])
+    price = float(sizing["limit_price"])
+    position = sizing.get("position")
+    lmt_offset = round_us_equity_offset(
+        max(0.01, float(price) * (trail / 100.0))
+    )
+    sizing = {
+        **sizing,
+        "trail_percent": trail,
+        "lmt_price_offset": lmt_offset,
+        "trail_stop_price": price,
+        "order_type": "TRAIL LIMIT",
     }
 
     preview = {
@@ -1094,16 +1330,14 @@ def place_trail_limit_sell(
         "trail_stop_price": price,
         "tif": (tif or "DAY").strip().upper(),
         "outside_rth": bool(outside_rth),
-        "account": account or (position.get("account") if position else None),
+        "account": sizing.get("account"),
         "exchange": "SMART",
         "currency": "USD",
         "dry_run": bool(dry_run),
         "sizing": sizing,
         "source": "ibkr_tws",
-        "disclaimer": (
-            "IBKR order helper. Real money risk if not on paper. "
-            "Not financial advice."
-        ),
+        "disclaimer": sizing["disclaimer"],
+        "target_return": sizing.get("target_return"),
     }
 
     if dry_run:
@@ -1143,7 +1377,7 @@ def place_trail_limit_sell(
         order.trailStopPrice = float(price)
         order.tif = (tif or "DAY").strip().upper()
         order.outsideRth = bool(outside_rth)
-        acct = account or (position.get("account") if position else None)
+        acct = sizing.get("account")
         if acct:
             order.account = str(acct).strip()
 
@@ -1191,4 +1425,88 @@ def place_trail_limit_sell(
                 if rejected
                 else None
             ),
+        }
+
+
+def modify_trail_limit_percent(
+    *,
+    order_id: int,
+    trail_percent: float,
+    trail_stop_price: float | None = None,
+    symbol: str | None = None,
+    wait_seconds: float = 1.0,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+) -> dict:
+    """Update ``trailingPercent`` (and optional ``trailStopPrice``) on a working TRAIL LIMIT."""
+    oid = int(order_id)
+    trail = float(trail_percent)
+    if trail <= 0.0:
+        raise ValueError("trail_percent must be positive.")
+    ticker = symbol.upper().strip() if symbol else None
+
+    with connect_ib(
+        host=host,
+        port=port,
+        client_id=client_id,
+        readonly=False,
+    ) as ib:
+        ib.reqOpenOrders()
+        ib.sleep(0.35)
+        match = None
+        for trade in ib.openTrades() or []:
+            order = trade.order
+            if order is None or int(getattr(order, "orderId", -1)) != oid:
+                continue
+            contract = trade.contract
+            sym = getattr(contract, "symbol", None)
+            if ticker and sym and str(sym).upper() != ticker:
+                continue
+            match = trade
+            break
+        if match is None:
+            return {
+                "order_id": oid,
+                "submitted": False,
+                "status": "not_found",
+                "error": f"No open order with order_id={oid}.",
+                "source": "ibkr_tws",
+            }
+
+        order = match.order
+        contract = match.contract
+        order.trailingPercent = trail
+        stop_px = _finite_positive(trail_stop_price)
+        if stop_px is not None:
+            stop_px = round_us_equity_price(float(stop_px), mode="floor")
+            order.trailStopPrice = float(stop_px)
+            order.lmtPriceOffset = float(
+                round_us_equity_offset(max(0.01, float(stop_px) * (trail / 100.0)))
+            )
+        elif order.trailStopPrice:
+            order.lmtPriceOffset = float(
+                round_us_equity_offset(
+                    max(0.01, float(order.trailStopPrice) * (trail / 100.0))
+                )
+            )
+
+        trade = ib.placeOrder(contract, order)
+        if wait_seconds > 0:
+            ib.sleep(wait_seconds)
+        status = trade.orderStatus
+        return {
+            "order_id": oid,
+            "symbol": getattr(contract, "symbol", ticker),
+            "trail_percent": trail,
+            "trail_stop_price": float(order.trailStopPrice)
+            if order.trailStopPrice
+            else None,
+            "lmt_price_offset": float(order.lmtPriceOffset)
+            if order.lmtPriceOffset
+            else None,
+            "status": status.status if status else "submitted",
+            "submitted": True,
+            "source": "ibkr_tws",
+            "message": f"TRAIL LIMIT {oid} updated to trail={trail}%.",
         }

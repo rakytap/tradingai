@@ -6,13 +6,16 @@ from pathlib import Path
 
 DEFAULT_DATASET_DIR = Path("data/dip_dataset")
 DEFAULT_MODEL_DIR = Path("data/dip_models")
+# Live scan / dipwalk Prob column (Alpaca-trained checkpoint).
+DEFAULT_INFER_MODEL_DIR = Path("data/dip_models_alpaca")
 
 # Sequence: OHLCV channels normalized vs prior_close (+ log volume).
 SEQ_CHANNELS = ("open", "high", "low", "close", "volume")
 N_SEQ_CHANNELS = len(SEQ_CHANNELS)
 
-# Static head features: log(prior_close), log1p(crossings), minutes/390, side.
-N_STATIC_FEATURES = 4
+# Static head features: log(prior_close), log1p(crossings), minutes/390.
+# Side (before/after dip) is used only when labeling training data, not as input.
+N_STATIC_FEATURES = 3
 
 DEFAULT_MAX_LEN = 390
 DEFAULT_MIN_BARS = 5

@@ -4,8 +4,8 @@ description: >-
   Walks the equity universe in randomized order (each ticker once): sync and
   scan one stock at a time, keep green-open names, and export every name with
   dip deeper than 4% (reclaiming, stabilizing, or plunging) to a Markdown file.
-  Use when the user invokes /dipwalk or asks for a randomized one-by-one dip walk
-  with MD export.
+  Third column is dip_model recover Prob (P(profit target)). Use when the user
+  invokes /dipwalk or asks for a randomized one-by-one dip walk with MD export.
 disable-model-invocation: true
 ---
 
@@ -120,6 +120,7 @@ final sorted section by `dip_pct` ascending)
 |--------|--------|
 | Ticker | `ticker` |
 | Dip % | `dip_pct` |
+| Prob | `recover_prob` — dip_model P(label=1) that the fee-aware profit target is hit (Alpaca-trained `data/dip_models_alpaca/checkpoint.pt`) |
 | Score | `bounce_score` |
 | Status | `status` (`reclaiming` / `stabilizing` / `plunging`) |
 | Green | `first_bar_green` |
@@ -131,11 +132,21 @@ final sorted section by `dip_pct` ascending)
 | Trail % | `profit_target.sell_trail_pct` |
 | Trail stop | `profit_target.trail_stop_at_activation_price` |
 
+Create the hits table with this header (Prob is the **third** column):
+
+```markdown
+| Ticker | Dip % | Prob | Score | Status | Green | Hammer | Engulf | Last | Taker@ | Trail on@ | Trail % | Trail stop |
+|--------|------:|-----:|------:|--------|-------|--------|--------|-----:|-------:|----------:|--------:|-----------:|
+```
+
 Example row block to append:
 
 ```markdown
-| TICKER | -5.12 | 0.42 | reclaiming | Y |  |  | 12.34 | ... |
+| TICKER | -5.12 | 0.61 | 0.42 | reclaiming | Y |  |  | 12.34 | ... |
 ```
+
+`recover_prob` comes from `evaluate_ticker` / the dip-cut classifier. Override
+checkpoint with `TRADINGAI_DIP_MODEL_CHECKPOINT` (or set `off` to skip).
 
 After the walk, append a **Sorted by dip depth** section with the same hits
 ordered by `dip_pct` ascending (the live table above stays in discovery order).
@@ -144,6 +155,8 @@ ordered by `dip_pct` ascending (the live table above stays in discovery order).
 
 - **Incremental export is mandatory:** write each qualifying hit to the MD file
   immediately after that stock is analyzed; the file must grow during the run.
+- Prefer `data/dipwalk/run_dipwalk.py` (or `evaluate_ticker`) so `recover_prob`
+  is filled automatically from `data/dip_models_alpaca/checkpoint.pt`.
 - Dip threshold is **hard**: only export if `dip_pct <= -4.0` (more than 4% below prior close). Do not export milder dips.
 - `plunging` counts as falling — include it when the dip threshold is met.
 - Full-universe one-by-one sync is slow (~1000 IBKR requests). Prefer leaving it running; resume from `/tmp/dipwalk_order.txt` + a progress index if interrupted (hits already on disk remain valid).

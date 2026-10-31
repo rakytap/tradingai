@@ -119,21 +119,22 @@ def encode_static(
     prior_close: float,
     sell_crossings_5d: float,
     cut_end,
-    side: str,
 ) -> np.ndarray:
-    """Static features: log(prior_close), log1p(crossings), minutes/390, side."""
+    """Static features: log(prior_close), log1p(crossings), minutes/390.
+
+    Cut side (before/after the dip) is not a model input; it only drives
+    training labels when building the dataset.
+    """
     stamp = pd.Timestamp(cut_end)
     if stamp.tzinfo is not None:
         stamp = stamp.tz_convert("America/New_York")
     minutes = stamp.hour * 60 + stamp.minute - (9 * 60 + 30)
     minutes = float(np.clip(minutes, 0.0, 390.0))
-    side_flag = 1.0 if str(side).lower() == "after" else 0.0
     return np.asarray(
         [
             np.log(max(float(prior_close), 1e-6)),
             np.log1p(max(float(sell_crossings_5d), 0.0)),
             minutes / 390.0,
-            side_flag,
         ],
         dtype=np.float32,
     )
@@ -174,7 +175,6 @@ def build_samples(
             prior_close=float(row.prior_close),
             sell_crossings_5d=float(row.sell_crossings_5d),
             cut_end=row.cut_end,
-            side=str(row.side),
         )
         assert static.shape[0] == N_STATIC_FEATURES
         out.append(
